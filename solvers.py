@@ -380,13 +380,22 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         # -----------------------------------------------
         # Step 1. Coefficient preparation
         # -----------------------------------------------
-        if self.qubo_obj is None or self.qubo_const is None:
-            self.compute_qubo_coeffs()        
+        if threshold is not None and threshold < 0:
+            raise ValueError("threshold must be non-negative")
+        if threshold is not None and threshold > 0.2:
+            threshold = 0.2  # cap to MIQP-derived cutoff
+        if cardinality is not None and cardinality < 0:
+            raise ValueError("cardinality must be non-negative")
+      
         
         self.find_redundant_conformers()
         rho_obs = self.target
         rho_calc = self.models[self.valid_indices]
         N, _ = rho_calc.shape
+        if cardinality is not None and cardinality > 0 and cardinality > N:
+            raise ValueError(
+                f"cardinality ({cardinality}) cannot exceed number of conformers ({N})"
+            )
 
         # QUBO 조립 (penalty 포함)
         K = 10
@@ -446,12 +455,21 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         # -----------------------------------------------
         # Step 1. Coefficient preparation
         # -----------------------------------------------
-        if self.qubo_obj is None or self.qubo_const is None:
-            self.compute_qubo_coeffs()
+        if threshold is not None and threshold < 0:
+            raise ValueError("threshold must be non-negative")
+        if threshold is not None and threshold > 0.2:
+            threshold = 0.2  # cap to MIQP-derived cutoff
+        if cardinality is not None and cardinality < 0:
+            raise ValueError("cardinality must be non-negative")
    
         rho_obs = self.target
         rho_calc = self.models[self.valid_indices]
         N, _ = rho_calc.shape
+        if cardinality is not None and cardinality > 0 and cardinality > N:
+            raise ValueError(
+                f"cardinality ({cardinality}) cannot exceed number of conformers ({N})"
+            )
+
 
         # QUBO 조립 (penalty 포함)
         K = 10
