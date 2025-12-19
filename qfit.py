@@ -420,18 +420,72 @@ class _BaseQFit(ABC):
             # Update occupancies from solver weights
             qubo_solution_lowest_bic = min(qubo_solutions, key=lambda sol: sol.BIC)
             logger.info(f"✅ Lowest BIC solution: threshold={qubo_solution_lowest_bic.threshold:.3f}, BIC={qubo_solution_lowest_bic.BIC:.4f}")
-            self._occupancies = qubo_solution_lowest_bic.weights  # pylint: disable=no-member
+            self._occupancies = self._apply_qubo_constraints(
+                qubo_solution_lowest_bic.weights,
+                threshold=qubo_solution_lowest_bic.threshold,
+                cardinality=cardinality,
+            )  # pylint: disable=no-member
             # Return solver's objective value (|ρ_obs - Σ(ω ρ_calc)|)
             return qubo_solution_lowest_bic.objective_value
-
         else:
             # Run solver with specified parameters
             solver.solve_qubo(cardinality=cardinality, threshold=threshold)
             # Update occupancies from solver weights
-            self._occupancies = solver.weights  # pylint: disable=no-member
+            self._occupancies = self._apply_qubo_constraints(
+                solver.weights,
+                threshold=threshold,
+                cardinality=cardinality,
+            )  # pylint: disable=no-member
             # Return solver's objective value (|ρ_obs - Σ(ω ρ_calc)|)
             return solver.objective_value
 
+    def _apply_qubo_constraints(self, occupancies, threshold, cardinality):
+        """Validate and enforce QUBO constraints (threshold, cardinality, Σω≤1).
+
+        If the solver output materially violates the QUBO formulation, raise SolverError
+        so the caller can react instead of silently accepting an infeasible solution.
+        Minor numerical drift is corrected in-place.
+        """
+        occ = np.array(occupancies, dtype=float, copy=True)
+        eps = 1e-6
+
+        # Validate threshold feasibility: any non-zero below threshold is invalid
+        if threshold is not None and threshold > 0:
+            below_thr = (occ > eps) & (occ + eps < threshold)
+            if np.any(below_thr):
+                raise SolverError(
+                    f"QUBO weights violate threshold {threshold}: "
+                    f"{np.sum(below_thr)} weights fall below threshold while non-zero"
+                )
+            # Enforce exact cutoff to clean numerical noise
+            occ[occ < threshold] = 0.0
+
+        # Validate cardinality (non-zero entries)
+        if cardinality is not None and cardinality > 0:
+            nz_idx = np.flatnonzero(occ > eps)
+            if len(nz_idx) > cardinality:
+                raise SolverError(
+                    f"QUBO weights violate cardinality {cardinality}: "
+                    f"non-zero count={len(nz_idx)}"
+                )
+
+        # Validate sum-to-one
+        total = occ.sum()
+        if total > 1.0 + eps:
+            raise SolverError(
+                f"QUBO weights violate Σω≤1: sum={total:.6f}"
+            )
+
+        # Cleanup for tiny numerical drift (<= eps): re-normalize only if barely above 1
+        if total > 1.0 and total <= 1.0 + eps:
+            occ /= total
+            logger.debug(
+                "[QUBO] Renormalized occupancies to satisfy Σω≤1: old_sum=%.6f, new_sum=%.6f",
+                total,
+                occ.sum(),
+            )
+
+        return occ
     def sample_b(self):
         """Create copies of conformers that vary in B-factor.
         For all conformers selected, create a copy with the B-factor vector by a scaling factor.
