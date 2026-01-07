@@ -2,9 +2,9 @@
 from argparse import ArgumentParser
 import numpy as np
 import pandas as pd
-from qfit.scaler import MapScaler
+from qfit.xtal.scaler import MapScaler
 from qfit.structure import Structure
-from qfit.volume import XMap
+from qfit.xtal.volume import XMap
 from qfit.validator import Validator
 import os
 
@@ -58,10 +58,14 @@ def main():
 
     # Remove anisotropic data
     for attr in ["u00", "u11", "u22", "u01", "u02", "u12"]:
-        if attr in dep_structure.data:
-            del dep_structure.data[attr]
-        if attr in gen_structure.data:
-            del gen_structure.data[attr]
+        if hasattr(dep_structure, "df") and dep_structure.df is not None:
+            if attr in dep_structure.df.columns:
+                dep_structure.df.drop(columns=[attr], inplace=True)
+
+        if hasattr(gen_structure, "df") and gen_structure.df is not None:
+            if attr in gen_structure.df.columns:
+                gen_structure.df.drop(columns=[attr], inplace=True)
+
 
     # Initialize data storage for RSCC values
     rscc_data = {
