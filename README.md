@@ -1,4 +1,4 @@
-# qFit 2024v3
+# qFit quantum
 
 
 ![](https://github.com/ExcitedStates/qfit-3.0/workflows/tests/badge.svg)
