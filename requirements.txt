@@ -1,0 +1,7 @@
+numpy
+cvxpy
+pyscipopt
+scipy
+scikit-learn
+rdkit
+
