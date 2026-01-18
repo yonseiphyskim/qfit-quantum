@@ -1,0 +1,728 @@
+from __future__ import annotations
+
+import inspect
+import logging
+import sys
+from abc import ABC, abstractmethod
+from collections import Counter
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, Optional, cast  # pylint: disable=unused-import
+
+import numpy as np
+import scipy as sci  # pylint: disable=unused-import
+import scipy.sparse  # pylint: disable=unused-import
+from numpy.typing import NDArray
+
+import cvxpy as cp
+
+from .utils.optional_lazy_import import lazy_load_module_if_available
+import dimod
+
+from dwave.system import LeapHybridSampler
+
+# ✅ 추가: 정통 QA용 sampler (없을 수도 있으니 안전하게 try)
+try:
+    from dwave.system import DWaveSampler, EmbeddingComposite
+except Exception:  # pragma: no cover
+    DWaveSampler = None
+    EmbeddingComposite = None
+
+
+logger = logging.getLogger(__name__)
+
+SolverError: tuple[type[Exception], ...] = RuntimeError
+
+__all__ = [
+    "available_qp_solvers",
+    "available_qubo_solvers",
+    "get_qp_solver_class",
+    "get_qubo_solver_class",
+]
+
+
+###############################
+# Define solver "interfaces" / Abstractions
+###############################
+
+
+class GenericSolver(ABC):
+    # Class variables
+    driver_pkg_name: str
+    driver: Optional[ModuleType]
+
+    # Instance variables
+    target: NDArray[np.float_]  # 1D array of shape (n_voxels,)
+    models: NDArray[np.float_]  # 2D array of shape (n_models, n_voxels,)
+
+    weights: Optional[NDArray[np.float_]] = None
+    objective_value: Optional[float] = None
+
+
+class QPSolver(GenericSolver):
+    """Finds the combination of conformer-occupancies that minimizes difference density.
+
+    We solve:
+        min_ω || ρ^c ω - ρ^o ||^2
+
+    Expanded:
+        rss(ω) = ω.T P ω + 2 q.T ω + C
+        P = ρ^c.T ρ^c
+        q = -ρ^c.T ρ^o
+        C = ρ^o.T ρ^o
+    """
+
+    @abstractmethod
+    def solve_qp(self) -> None: ...
+
+
+class QUBOSolver(GenericSolver):
+    """QUBO-based solver interface."""
+
+    @abstractmethod
+    def solve_qubo(
+        self,
+        threshold: Optional[float] = None,
+        cardinality: Optional[int] = None,
+        exact: bool = False,
+    ) -> None: ...
+
+
+###############################
+# Define solver implementations
+###############################
+
+
+class CVXPYSolver(QPSolver, QUBOSolver):
+    driver_pkg_name = "cvxpy"
+    driver = lazy_load_module_if_available(driver_pkg_name)
+
+    def __init__(self, target, models, in_model=None, nthreads=1):
+        self.target = target
+        self.models = models
+        self.in_model = in_model
+
+        self.quad_obj = None
+        self.lin_obj = None
+
+        # ✅ QUBO 속성 초기화
+        self.qubo_obj = None
+        self.qubo_const = None
+
+        self.nconformers = models.shape[0]
+        self.valid_indices: list[int] = []
+        self.redundant_indices: list[int] = []
+
+        self._weights = None
+        self._objective_value = 0.0
+        self.weights = None
+
+        # ✅ QA-QSCI 결과 저장용
+        self.qsci_energy: Optional[float] = None     # ground energy of H_R
+        self.qsci_SR: Optional[list[tuple[int, ...]]] = None  # selected z-bitstrings
+        self.qsci_HR: Optional[NDArray[np.float_]] = None
+        self.qsci_counts: Optional[Counter] = None   # Counter of z-bitstrings
+
+    def find_redundant_conformers(self, threshold=1e-6):
+        # 💡 매번 새 solver라도 리스트를 항상 초기화
+        self.valid_indices = []
+        self.redundant_indices = []
+
+        for i in range(self.nconformers):
+            if i in self.redundant_indices:
+                continue
+            self.valid_indices.append(i)
+            for j in range(i + 1, self.nconformers):
+                if j in self.redundant_indices:
+                    continue
+                if np.linalg.norm(self.models[i] - self.models[j]) < threshold:
+                    self.redundant_indices.append(j)
+        assert len(self.valid_indices) + len(self.redundant_indices) == self.nconformers
+
+    def compute_quadratic_coeffs(self):
+        # minimize 0.5 x.T P x + q.T x
+        #   where P = ρ_model.T ρ_model
+        #         q = -ρ_model.T ρ_obs
+        self.find_redundant_conformers()
+        self.quad_obj = self.models[self.valid_indices] @ self.models[self.valid_indices].T
+        self.lin_obj = -1.0 * self.models[self.valid_indices] @ self.target
+
+    def compute_qubo_coeffs(
+        self,
+        Delta=0.1,
+        lam0=100,
+        lam1=100,
+        lam2=100,
+        lam3=100,
+        tmin=None,
+        K=10,
+        threshold=None,
+        cardinality=3,
+    ):
+        # -----------------------------
+        # Handle threshold logic
+        # -----------------------------
+        if tmin is None:
+            tmin = 0.2 if threshold is None else threshold
+
+        # ------------------------------------------------------------
+        # Prepare data
+        # ------------------------------------------------------------
+        self.find_redundant_conformers()
+        rho_calc = self.models[self.valid_indices]
+        rho_obs = self.target
+        N, _ = rho_calc.shape
+
+        # correlation terms
+        G = rho_calc @ rho_calc.T        # G_ij = ⟨ρ_calc_i, ρ_calc_j⟩
+        f = rho_obs @ rho_calc.T         # f_i = ⟨ρ_obs, ρ_calc_i⟩
+
+        # unary encoding (for block structure)
+        M = np.zeros((N, N * K))
+        for i in range(N):
+            M[i, i*K:(i+1)*K] = 1.0
+
+        # helper vectors
+        a = np.ones(N*K)        # for Σ w ≤ 1 constraint
+        b = np.ones(K)          # slack for Σ w + s = 1
+
+        S_v = np.zeros((N, N*K))
+        for i in range(N):
+            S_v[i, i*K:(i+1)*K] = 1.0  # slack (upper)
+
+        S_y = np.zeros((N, N*K))
+        for i in range(N):
+            S_y[i, i*K:(i+1)*K] = 1.0
+
+        c = np.ones(N)
+        d = np.ones(K)
+
+        # ------------------------------------------------------------
+        # Core data term (least squares fit)
+        # ------------------------------------------------------------
+        Q_data = Delta**2 * (M.T @ G @ M)
+        c_data = -2 * Delta * (M.T @ f)
+
+        # ------------------------------------------------------------
+        # Sum-to-one constraint  (Σ w ≤ 1)
+        # ------------------------------------------------------------
+        Q_sum1 = lam0 * Delta**2 * np.block([
+            [np.outer(a, a), np.outer(a, b)],
+            [np.outer(b, a), np.outer(b, b)]
+        ])
+        c_sum1 = -2 * lam0 * Delta * np.concatenate([a, b])
+        const_sum1 = lam0
+
+        # ------------------------------------------------------------
+        # Upper bound constraint  (w_i ≤ z_i)
+        # ------------------------------------------------------------
+        Q_upper = lam1 * np.block([
+            [Delta**2*(M.T @ M),      Delta**2*(M.T @ S_v),   -Delta*M.T],
+            [Delta**2*(S_v.T @ M),    Delta**2*(S_v.T @ S_v), -Delta*S_v.T],
+            [-Delta*M,                -Delta*S_v,             np.eye(N)]
+        ])
+
+        # ------------------------------------------------------------
+        # Lower bound constraint  (w_i ≥ t_min z_i)
+        # ------------------------------------------------------------
+        Q_lower = lam2 * np.block([
+            [Delta**2*(M.T @ M),         -Delta**2*(M.T @ S_y),   -tmin*Delta*M.T],
+            [-Delta**2*(S_y.T @ M),      Delta**2*(S_y.T @ S_y),  tmin*Delta*S_y.T],
+            [-tmin*Delta*M,              tmin*Delta*S_y,          tmin**2*np.eye(N)]
+        ])
+
+        # ------------------------------------------------------------
+        # Sum-to-cardinality constraint  (Σ z ≤ cardinality)
+        # ------------------------------------------------------------
+        Q_sum2 = lam3 * np.block([
+            [np.outer(c, c),       Delta*np.outer(c, d)],
+            [np.outer(d, c),       Delta*np.outer(d, d)]
+        ])
+        c_sum2 = -2 * lam3 * cardinality * np.concatenate([c, Delta*d])
+        const_sum2 = lam3 * cardinality**2
+
+        # ------------------------------------------------------------
+        # Combine into single block matrix
+        # ------------------------------------------------------------
+        n_x = N * K
+        n_u = K
+        n_v = N * K
+        n_y = N * K
+        n_z = N
+        n_k = K
+        n_tot = n_x + n_u + n_v + n_y + n_z + n_k
+
+        Q_total = np.zeros((n_tot, n_tot))
+        c_total = np.zeros(n_tot)
+
+        # indices for each variable block
+        idx_x = slice(0, n_x)
+        idx_u = slice(n_x, n_x+n_u)
+        idx_v = slice(n_x+n_u, n_x+n_u+n_v)
+        idx_y = slice(n_x+n_u+n_v, n_x+n_u+n_v+n_y)
+        idx_z = slice(n_x+n_u+n_v+n_y, n_x+n_u+n_v+n_y+n_z)
+        idx_k = slice(n_x+n_u+n_v+n_y+n_z, n_tot)
+
+        # (1) data + sum1 constraint
+        Q_total[:n_x, :n_x] += Q_data
+        Q_total[:n_x+n_u, :n_x+n_u] += Q_sum1
+        c_total[:n_x] += c_data
+        c_total[:n_x+n_u] += c_sum1
+
+        # (2) upper constraint
+        ix_upper = np.r_[range(idx_x.start, idx_x.stop),
+                         range(idx_v.start, idx_v.stop),
+                         range(idx_z.start, idx_z.stop)]
+        Q_total[np.ix_(ix_upper, ix_upper)] += Q_upper
+
+        # (3) lower constraint
+        ix_lower = np.r_[range(idx_x.start, idx_x.stop),
+                         range(idx_y.start, idx_y.stop),
+                         range(idx_z.start, idx_z.stop)]
+        Q_total[np.ix_(ix_lower, ix_lower)] += Q_lower
+
+        # (4) cardinality constraint (z + k block)
+        start_card = idx_z.start
+        end_card = n_tot
+        Q_total[start_card:end_card, start_card:end_card] += Q_sum2
+        c_total[start_card:end_card] += c_sum2
+
+        # symmetrize + add linear terms on diagonal
+        Q_total = 0.5 * (Q_total + Q_total.T)
+        Q_total += np.diag(c_total)
+
+        const = float(np.dot(rho_obs, rho_obs) + const_sum1 + const_sum2)
+
+        # Save for solver
+        self.qubo_obj = Q_total
+        self.qubo_const = const
+
+        print(f"[DEBUG] assemble_qubo: tmin={tmin}")
+        logger.info(f"Constructed QUBO matrix of size {Q_total.shape}")
+        return Q_total, const
+
+    def construct_weights(self):
+        self.weights = []
+        j = 0
+        for i in range(self.nconformers):
+            if i in self.redundant_indices:
+                self.weights.append(0.0)
+            else:
+                self.weights.append(float(self._weights[j]))
+                j += 1
+        self.weights = np.array(self.weights, dtype=float)
+        self.objective_value = float(self._objective_value)
+        assert len(self.weights) == self.nconformers
+
+    # ============================================================
+    # ✅ NEW: QA-QSCI solver
+    #   - QUBO(제약 포함)는 sampling bias로만 사용
+    #   - H는 density 기반 effective Hamiltonian(제약 제외)
+    #   - QA 샘플 → z-bitstring 빈도 → S_R
+    #   - H_R = X H X^T 대각화 → weights 복원
+    # ============================================================
+    def _build_effective_hamiltonian_valid(self) -> NDArray[np.float_]:
+        """
+        Effective H on valid conformers only (penalty 제외):
+
+            H_ij = <ρ_i, ρ_j>                  (i != j)
+            H_ii = <ρ_i, ρ_i> - 2 <ρ_i, ρ_obs> (i == j)
+
+        where ρ_i are rows of rho_calc = models[valid_indices].
+        """
+        self.find_redundant_conformers()
+        rho_calc = self.models[self.valid_indices]
+        rho_obs = self.target
+
+        G = rho_calc @ rho_calc.T          # <ρ_i, ρ_j>
+        f = rho_calc @ rho_obs             # <ρ_i, ρ_obs>
+
+        H = G.astype(float, copy=True)
+        np.fill_diagonal(H, np.diag(G) - 2.0 * f)
+        return H
+
+    def solve_qubo_qsci(
+        self,
+        threshold: float = 0.0,
+        cardinality: int = 0,
+        R: int = 50,
+        num_reads: int = 1000,
+        annealing_time: Optional[int] = None,
+        chain_strength: Optional[float] = None,
+        normalize_weights: bool = True,
+        filter_empty: bool = True,
+        filter_by_cardinality: bool = False,
+        # QUBO build params (기존과 동일 default)
+        K: int = 10,
+        Delta: float = 0.1,
+        lam0: float = 100,
+        lam1: float = 100,
+        lam2: float = 100,
+        lam3: float = 100,
+        sampler: Optional[Any] = None,
+    ) -> dict[str, Any]:
+        """
+        QA-QSCI pipeline (논문 구조):
+          1) QUBO 구성(제약 포함) → QA로 num_reads 샘플링
+          2) 샘플에서 z-block bitstring만 뽑아서 빈도 기반 S_R 구성
+          3) density 기반 effective H(제약 제외) 구성
+          4) H_R = P_R H P_R = X H X^T 구성
+          5) classical diagonalization으로 ground eigenpair 얻음
+          6) eigenvector로 marginal weights 복원 (+ 옵션: sum=1 정규화)
+          7) self.weights / self.objective_value 업데이트
+
+        Returns dict with intermediates for debugging/논문 실험.
+        """
+        # ---------
+        # 0) 준비
+        # ---------
+        self.find_redundant_conformers()
+        rho_calc = self.models[self.valid_indices]
+        rho_obs = self.target
+        N, _ = rho_calc.shape
+
+        # threshold 로직(기존 코드와 동일)
+        tmin = threshold if threshold else 0.2
+
+        # ---------
+        # 1) QUBO 구성 (penalty 포함) — sampling bias 용
+        # ---------
+        Q, const = self.compute_qubo_coeffs(
+            Delta=Delta,
+            lam0=lam0,
+            lam1=lam1,
+            lam2=lam2,
+            lam3=lam3,
+            tmin=tmin,
+            K=K,
+            threshold=threshold,
+            cardinality=cardinality if cardinality else 3,
+        )
+
+        # Scaling (기존 코드와 동일한 안정화)
+        scale = max(float(np.abs(Q).max()), 1.0)
+        Q_scaled = Q / scale
+        bqm = dimod.BQM.from_qubo(Q_scaled)
+
+        # ---------
+        # 2) 정통 QA 샘플링 (num_reads 만큼)
+        # ---------
+        if sampler is None:
+            if DWaveSampler is None or EmbeddingComposite is None:
+                raise RuntimeError(
+                    "DWaveSampler/EmbeddingComposite import failed. "
+                    "Install dwave-system (Ocean) and ensure environment is set."
+                )
+            sampler = EmbeddingComposite(DWaveSampler())
+
+        sample_kwargs: dict[str, Any] = {"num_reads": int(num_reads)}
+        if annealing_time is not None:
+            sample_kwargs["annealing_time"] = int(annealing_time)
+        if chain_strength is not None:
+            sample_kwargs["chain_strength"] = float(chain_strength)
+
+        sampleset = sampler.sample(bqm, **sample_kwargs)
+
+        # ---------
+        # 3) 샘플 → z-bitstring 빈도 Counter 구성 → S_R 선택
+        #    (중요) QUBO 변수 전체 중 z-block만 뽑는다
+        # ---------
+        n_x = N * K
+        n_u = K
+        n_v = N * K
+        n_y = N * K
+        z_start = n_x + n_u + n_v + n_y
+        z_end = z_start + N
+
+        z_counter: Counter[tuple[int, ...]] = Counter()
+        # D-Wave는 기본 answer_mode=histogram인 경우가 많아서 num_occurrences 고려
+        for datum in sampleset.data(["sample", "num_occurrences"]):
+            s = datum.sample  # dict: var -> 0/1
+            occ = int(datum.num_occurrences) if hasattr(datum, "num_occurrences") else 1
+
+            z = tuple(int(s[i]) for i in range(z_start, z_end))
+
+            if filter_empty and sum(z) == 0:
+                continue
+            if filter_by_cardinality and cardinality and sum(z) > int(cardinality):
+                continue
+
+            z_counter[z] += occ
+
+        if len(z_counter) == 0:
+            raise RuntimeError("No valid z-bitstrings collected from QA samples (z_counter is empty).")
+
+        SR = [z for z, _ in z_counter.most_common(int(R))]
+        if len(SR) == 0:
+            raise RuntimeError("S_R is empty after selecting most common bitstrings.")
+
+        # ---------
+        # 4) density 기반 effective Hamiltonian H (penalty 제외)
+        # ---------
+        H = self._build_effective_hamiltonian_valid()  # (N,N)
+
+        # ---------
+        # 5) H_R = X H X^T 구성 (X: R x N)
+        # ---------
+        X = np.array(SR, dtype=float)  # (R, N)
+        HR = X @ H @ X.T               # (R, R)
+        HR = 0.5 * (HR + HR.T)         # symmetry 안전
+
+        # ---------
+        # 6) classical diagonalization
+        # ---------
+        eigvals, eigvecs = np.linalg.eigh(HR)
+        E0 = float(eigvals[0])
+        psi0 = eigvecs[:, 0]  # (R,)
+
+        # ---------
+        # 7) eigenvector → marginal weights 복원
+        #    w_raw_i = Σ_k |c_k|^2 * x_{k,i}
+        #    옵션: 기대 cardinality로 나눠서 Σw=1 정규화
+        # ---------
+        probs = (psi0.real ** 2)  # (R,)
+        w_raw = probs @ X         # (N,)
+
+        if normalize_weights:
+            expected_size = float(probs @ X.sum(axis=1))
+            if expected_size > 0:
+                w_valid = w_raw / expected_size
+            else:
+                w_valid = w_raw
+        else:
+            w_valid = w_raw
+
+        # 수치 안전
+        w_valid = np.clip(w_valid, 0.0, 1.0)
+
+        # ---------
+        # 8) objective(rss) 계산 + 결과 저장 (기존 construct_weights 재사용)
+        # ---------
+        combined_model = w_valid @ rho_calc
+        residual = combined_model - rho_obs
+        rss = float(residual @ residual)
+
+        self._weights = w_valid
+        self._objective_value = rss
+        self.qsci_energy = E0
+        self.qsci_SR = SR
+        self.qsci_HR = HR
+        self.qsci_counts = z_counter
+
+        self.construct_weights()
+
+        logger.info(
+            "QA-QSCI done: SR=%d, E0=%.6f, rss=%.6f",
+            len(SR),
+            E0,
+            rss,
+        )
+
+        return {
+            "qsci_energy": E0,
+            "rss": rss,
+            "weights_full": self.weights,      # redundant 포함 전체 길이
+            "weights_valid": w_valid,          # valid conformer 기준
+            "SR_z": SR,                        # z-bitstrings
+            "HR": HR,
+            "z_counts": z_counter,
+            "qubo_scale": scale,
+            "qubo_const": const,
+        }
+
+    # ============================================================
+    # 기존 Hybrid QUBO solver (그대로 유지)
+    # ============================================================
+    def solve_qubo(self, threshold=0, cardinality=0):
+        # Step 1. Coefficient preparation
+        if self.qubo_obj is None or self.qubo_const is None:
+            self.compute_qubo_coeffs()
+
+        self.find_redundant_conformers()
+        rho_calc = self.models[self.valid_indices]
+        N, _ = rho_calc.shape
+
+        # QUBO 조립 (penalty 포함)
+        K = 10
+        Delta = 0.1
+        lam0, lam1, lam2, lam3 = 100, 100, 100, 100
+        tmin = threshold if threshold else 0.2
+        print(f"[DEBUG] solve_qubo(): assembling QUBO with tmin={tmin:.3f}, threshold={threshold}")
+        Q, const = self.compute_qubo_coeffs(
+            Delta=Delta,
+            lam0=lam0, lam1=lam1, lam2=lam2, lam3=lam3,
+            tmin=tmin, K=K,
+            threshold=threshold,
+            cardinality=cardinality,
+        )
+
+        # Step 2. Scaling & BQM construction
+        scale = max(abs(Q).max(), 1.0)
+        Q_scaled = Q / scale
+        bqm = dimod.BQM.from_qubo(Q_scaled)
+
+        # Step 3. D-Wave Hybrid Sampling
+        sampler = LeapHybridSampler()
+        sampleset = sampler.sample(bqm, label="qfit-QUBO-hybrid")
+
+        best_sample = sampleset.first.sample
+        objective_value = sampleset.first.energy * scale + const
+        sol = np.array([best_sample[i] for i in sorted(best_sample.keys())])
+
+        # Step 4. Extract x-block → continuous w
+        n_x = N * K
+        x = sol[:n_x]
+        w = np.array([np.sum(x[i*K:(i+1)*K]) * Delta for i in range(N)])
+
+        # Step 5. Save results
+        self._weights = w
+        self.objective_value = objective_value
+        self._objective_value = objective_value
+        self.construct_weights()
+
+        print("[DEBUG] Q_total stats:", Q.min(), Q.max(), np.mean(Q))
+        print("[DEBUG] const =", const)
+        print("[DEBUG] sample energy =", sampleset.first.energy)
+        print("[DEBUG] scaled objective =", sampleset.first.energy * scale)
+        print("[DEBUG] final objective =", objective_value)
+        print(f"✅ D-Wave hybrid solved QUBO: Objective={objective_value:.4f}")
+
+    def rscc_solve_qubo(self, threshold=0, cardinality=0):
+        if self.qubo_obj is None or self.qubo_const is None:
+            self.compute_qubo_coeffs()
+
+        self.find_redundant_conformers()
+        rho_calc = self.models[self.valid_indices]
+        N, _ = rho_calc.shape
+
+        # QUBO 조립 (penalty 포함)
+        K = 10
+        Delta = 0.1
+        lam0, lam1, lam2, lam3 = 100, 100, 100, 100
+        tmin = threshold if threshold else 0.2
+        Q, const = self.compute_qubo_coeffs(
+            Delta=Delta,
+            lam0=lam0, lam1=lam1, lam2=lam2, lam3=lam3,
+            tmin=tmin, K=K,
+            threshold=threshold,
+            cardinality=cardinality,
+        )
+
+        # Scaling & BQM construction
+        scale = max(abs(Q).max(), 1.0)
+        Q_scaled = Q / scale
+        bqm = dimod.BQM.from_qubo(Q_scaled)
+
+        # Hybrid Sampling
+        sampler = LeapHybridSampler()
+        sampleset = sampler.sample(bqm, label="qfit-QUBO-hybrid")
+
+        best_sample = sampleset.first.sample
+        objective_value = sampleset.first.energy * scale + const
+        sol = np.array([best_sample[i] for i in sorted(best_sample.keys())])
+
+        # Extract x-block → continuous w
+        n_x = N * K
+        x = sol[:n_x]
+        w = np.array([np.sum(x[i*K:(i+1)*K]) * Delta for i in range(N)])
+
+        # Save
+        self._weights = w
+        self.objective_value = objective_value
+        self._objective_value = objective_value
+        self.construct_weights()
+
+        # RSCC
+        cutoff = 0.002
+        filterarray = self._weights >= cutoff
+        filtered_weights = self._weights[filterarray]
+        filtered_models = self.models[filterarray, :]
+
+        combined_model = np.dot(filtered_weights, filtered_models)
+        corr = np.corrcoef(combined_model, self.target)[0, 1]
+        print(f"RSCC for model of interest: {corr}")
+
+        if self.in_model is not None and getattr(self.in_model, "size", 0) > 0:
+            input_corr = np.corrcoef(self.in_model, self.target)[0, 1]
+            print(f"RSCC for comparision model: {input_corr}")
+
+        self.construct_weights()
+
+    def solve_qp(self, split_threshold=3000):
+        if self.quad_obj is None or self.lin_obj is None:
+            self.compute_quadratic_coeffs()
+
+        valid_conformers = len(self.valid_indices)
+        self._weights = np.zeros(valid_conformers)
+        splits = valid_conformers // split_threshold + 1
+
+        for split in range(splits):
+            P = self.quad_obj[split::splits, split::splits]
+            q = self.lin_obj[split::splits]
+            m = len(P)
+            w = cp.Variable(m)
+            objective = cp.Minimize(0.5 * cp.quad_form(w, cp.psd_wrap(P)) + q.T @ w)
+            constraints = [w >= np.zeros(m), np.ones(m).T @ w <= 1]
+            prob = cp.Problem(objective, constraints)
+            prob.solve()
+
+            self._objective_value += 2 * prob.value + self.target.T @ self.target
+            self._objective_value /= splits
+            self._weights[split::splits] = w.value / splits
+
+        self.construct_weights()
+
+
+###############################
+# Helper methods
+###############################
+
+
+def _available_qp_solvers() -> dict[str, type]:
+    available_solvers = {}
+    for name, obj in sys.modules[__name__].__dict__.items():
+        if inspect.isclass(obj) and obj.__module__ == __name__:
+            if obj in QPSolver.__subclasses__():
+                if obj.driver is not None:
+                    available_solvers[name] = obj
+    return available_solvers
+
+
+def _available_qubo_solvers() -> dict[str, type]:
+    available_solvers = {}
+    for name, obj in sys.modules[__name__].__dict__.items():
+        if inspect.isclass(obj) and obj.__module__ == __name__:
+            if obj in QUBOSolver.__subclasses__():
+                if obj.driver is not None:
+                    available_solvers[name] = obj
+    return available_solvers
+
+
+available_qp_solvers = _available_qp_solvers()
+available_qubo_solvers = _available_qubo_solvers()
+if not available_qp_solvers:
+    msg = (
+        "Could not find any QP solver engines.\n"
+        + "Please ensure that at least one of:\n  "
+        + str([solver.driver_pkg_name for solver in QPSolver.__subclasses__()])
+        + "\n"
+        + "is installed."
+    )
+    raise ImportError(msg)
+
+if not available_qubo_solvers:
+    msg = (
+        "Could not find any QUBO solver engines.\n"
+        + "Please ensure that at least one of:\n  "
+        + str([solver.driver_pkg_name for solver in QUBOSolver.__subclasses__()])
+        + "\n"
+        + "is installed."
+    )
+    raise ImportError(msg)
+
+
+def get_qp_solver_class(solver_type: str) -> type[QPSolver]:
+    return available_qp_solvers[solver_type]
+
+
+def get_qubo_solver_class(solver_type: str) -> type[QUBOSolver]:
+    return available_qubo_solvers[solver_type]
