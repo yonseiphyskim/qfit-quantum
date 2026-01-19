@@ -339,12 +339,12 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         np.fill_diagonal(H, np.diag(G) - 2.0 * f)
         return H
 
-    def solve_qubo_qsci(
+    def solve_qubo(
         self,
         threshold: float = 0.0,
         cardinality: int = 0,
         R: int = 10,
-        num_reads: int = 1000,
+        num_reads: int = 100,
         n_runs: int = 10,          # ✅ NEW: QA 반복 횟수
         annealing_time: Optional[int] = None,
         chain_strength: Optional[float] = None,
@@ -654,3 +654,4 @@ def get_qp_solver_class(solver_type: str) -> type[QPSolver]:
 
 def get_qubo_solver_class(solver_type: str) -> type[QUBOSolver]:
     return available_qubo_solvers[solver_type]
+
