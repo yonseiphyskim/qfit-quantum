@@ -18,9 +18,8 @@ import cvxpy as cp
 from .utils.optional_lazy_import import lazy_load_module_if_available
 import dimod
 
-from dwave.system import LeapHybridSampler
 
-# ✅ 추가: 정통 QA용 sampler (없을 수도 있으니 안전하게 try)
+# ✅ QA sampler용 (없을 수도 있으니 안전하게 try)
 try:
     from dwave.system import DWaveSampler, EmbeddingComposite
 except Exception:  # pragma: no cover
@@ -344,14 +343,15 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         self,
         threshold: float = 0.0,
         cardinality: int = 0,
-        R: int = 50,
+        R: int = 10,
         num_reads: int = 1000,
+        n_runs: int = 10,          # ✅ NEW: QA 반복 횟수
         annealing_time: Optional[int] = None,
         chain_strength: Optional[float] = None,
         normalize_weights: bool = True,
         filter_empty: bool = True,
         filter_by_cardinality: bool = False,
-        # QUBO build params (기존과 동일 default)
+        # QUBO build params
         K: int = 10,
         Delta: float = 0.1,
         lam0: float = 100,
@@ -361,31 +361,26 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         sampler: Optional[Any] = None,
     ) -> dict[str, Any]:
         """
-        QA-QSCI pipeline (논문 구조):
-          1) QUBO 구성(제약 포함) → QA로 num_reads 샘플링
-          2) 샘플에서 z-block bitstring만 뽑아서 빈도 기반 S_R 구성
-          3) density 기반 effective H(제약 제외) 구성
-          4) H_R = P_R H P_R = X H X^T 구성
-          5) classical diagonalization으로 ground eigenpair 얻음
-          6) eigenvector로 marginal weights 복원 (+ 옵션: sum=1 정규화)
-          7) self.weights / self.objective_value 업데이트
+        QA-QSCI with multi-run QA sampling.
 
-        Returns dict with intermediates for debugging/논문 실험.
+        QUBO is used ONLY as a sampling bias.
+        Effective Hamiltonian H is constructed independently
+        and diagonalized on the reduced subspace S_R.
         """
-        # ---------
+
+        # -------------------------------------------------
         # 0) 준비
-        # ---------
+        # -------------------------------------------------
         self.find_redundant_conformers()
         rho_calc = self.models[self.valid_indices]
         rho_obs = self.target
         N, _ = rho_calc.shape
 
-        # threshold 로직(기존 코드와 동일)
         tmin = threshold if threshold else 0.2
 
-        # ---------
-        # 1) QUBO 구성 (penalty 포함) — sampling bias 용
-        # ---------
+        # -------------------------------------------------
+        # 1) QUBO 구성 (penalty 포함, sampling bias only)
+        # -------------------------------------------------
         Q, const = self.compute_qubo_coeffs(
             Delta=Delta,
             lam0=lam0,
@@ -398,34 +393,27 @@ class CVXPYSolver(QPSolver, QUBOSolver):
             cardinality=cardinality if cardinality else 3,
         )
 
-        # Scaling (기존 코드와 동일한 안정화)
         scale = max(float(np.abs(Q).max()), 1.0)
         Q_scaled = Q / scale
         bqm = dimod.BQM.from_qubo(Q_scaled)
 
-        # ---------
-        # 2) 정통 QA 샘플링 (num_reads 만큼)
-        # ---------
+        # -------------------------------------------------
+        # 2) QA sampler 준비
+        # -------------------------------------------------
         if sampler is None:
             if DWaveSampler is None or EmbeddingComposite is None:
-                raise RuntimeError(
-                    "DWaveSampler/EmbeddingComposite import failed. "
-                    "Install dwave-system (Ocean) and ensure environment is set."
-                )
+                raise RuntimeError("DWaveSampler not available.")
             sampler = EmbeddingComposite(DWaveSampler())
 
-        sample_kwargs: dict[str, Any] = {"num_reads": int(num_reads)}
+        sample_kwargs = {"num_reads": int(num_reads)}
         if annealing_time is not None:
             sample_kwargs["annealing_time"] = int(annealing_time)
         if chain_strength is not None:
             sample_kwargs["chain_strength"] = float(chain_strength)
 
-        sampleset = sampler.sample(bqm, **sample_kwargs)
-
-        # ---------
-        # 3) 샘플 → z-bitstring 빈도 Counter 구성 → S_R 선택
-        #    (중요) QUBO 변수 전체 중 z-block만 뽑는다
-        # ---------
+        # -------------------------------------------------
+        # 3) 🔥 QA n_runs회 실행 → z-bitstring 누적
+        # -------------------------------------------------
         n_x = N * K
         n_u = K
         n_v = N * K
@@ -434,53 +422,59 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         z_end = z_start + N
 
         z_counter: Counter[tuple[int, ...]] = Counter()
-        # D-Wave는 기본 answer_mode=histogram인 경우가 많아서 num_occurrences 고려
-        for datum in sampleset.data(["sample", "num_occurrences"]):
-            s = datum.sample  # dict: var -> 0/1
-            occ = int(datum.num_occurrences) if hasattr(datum, "num_occurrences") else 1
 
-            z = tuple(int(s[i]) for i in range(z_start, z_end))
+        for run in range(n_runs):
+            logger.info("QA-QSCI sampling run %d / %d", run + 1, n_runs)
 
-            if filter_empty and sum(z) == 0:
-                continue
-            if filter_by_cardinality and cardinality and sum(z) > int(cardinality):
-                continue
+            sampleset = sampler.sample(bqm, **sample_kwargs)
 
-            z_counter[z] += occ
+            for datum in sampleset.data(["sample", "num_occurrences"]):
+                s = datum.sample
+                occ = int(datum.num_occurrences) if hasattr(datum, "num_occurrences") else 1
+
+                z = tuple(int(s[i]) for i in range(z_start, z_end))
+
+                if filter_empty and sum(z) == 0:
+                    continue
+                if filter_by_cardinality and cardinality and sum(z) > int(cardinality):
+                    continue
+
+                z_counter[z] += occ
 
         if len(z_counter) == 0:
-            raise RuntimeError("No valid z-bitstrings collected from QA samples (z_counter is empty).")
+            raise RuntimeError("No valid z-bitstrings collected from QA runs.")
 
+        # -------------------------------------------------
+        # 4) S_R 선택 (누적 분포 기준)
+        # -------------------------------------------------
         SR = [z for z, _ in z_counter.most_common(int(R))]
         if len(SR) == 0:
-            raise RuntimeError("S_R is empty after selecting most common bitstrings.")
+            raise RuntimeError("S_R is empty.")
 
-        # ---------
-        # 4) density 기반 effective Hamiltonian H (penalty 제외)
-        # ---------
-        H = self._build_effective_hamiltonian_valid()  # (N,N)
+        # -------------------------------------------------
+        # 5) density 기반 effective Hamiltonian H
+        # -------------------------------------------------
+        H = self._build_effective_hamiltonian_valid()  # (N, N)
 
-        # ---------
-        # 5) H_R = X H X^T 구성 (X: R x N)
-        # ---------
-        X = np.array(SR, dtype=float)  # (R, N)
-        HR = X @ H @ X.T               # (R, R)
-        HR = 0.5 * (HR + HR.T)         # symmetry 안전
+        # -------------------------------------------------
+        # 6) H_R = X H X^T
+        # -------------------------------------------------
+        X = np.array(SR, dtype=float)   # (R, N)
+        HR = X @ H @ X.T
+        HR = 0.5 * (HR + HR.T)
 
-        # ---------
-        # 6) classical diagonalization
-        # ---------
+        # -------------------------------------------------
+        # 7) classical diagonalization
+        # -------------------------------------------------
         eigvals, eigvecs = np.linalg.eigh(HR)
         E0 = float(eigvals[0])
-        psi0 = eigvecs[:, 0]  # (R,)
+        psi0 = eigvecs[:, 0]
 
-        # ---------
-        # 7) eigenvector → marginal weights 복원
-        #    w_raw_i = Σ_k |c_k|^2 * x_{k,i}
-        #    옵션: 기대 cardinality로 나눠서 Σw=1 정규화
-        # ---------
-        probs = (psi0.real ** 2)  # (R,)
-        w_raw = probs @ X         # (N,)
+        # -------------------------------------------------
+        # 8) eigenvector → marginal weights
+        # -------------------------------------------------
+        probs = psi0.real ** 2
+        w_raw = probs @ X
 
         if normalize_weights:
             expected_size = float(probs @ X.sum(axis=1))
@@ -491,16 +485,18 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         else:
             w_valid = w_raw
 
-        # 수치 안전
         w_valid = np.clip(w_valid, 0.0, 1.0)
 
-        # ---------
-        # 8) objective(rss) 계산 + 결과 저장 (기존 construct_weights 재사용)
-        # ---------
+        # -------------------------------------------------
+        # 9) RSS 계산
+        # -------------------------------------------------
         combined_model = w_valid @ rho_calc
         residual = combined_model - rho_obs
         rss = float(residual @ residual)
 
+        # -------------------------------------------------
+        # 10) 결과 저장
+        # -------------------------------------------------
         self._weights = w_valid
         self._objective_value = rss
         self.qsci_energy = E0
@@ -511,7 +507,8 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         self.construct_weights()
 
         logger.info(
-            "QA-QSCI done: SR=%d, E0=%.6f, rss=%.6f",
+            "QA-QSCI done: runs=%d, SR=%d, E0=%.6f, rss=%.6f",
+            n_runs,
             len(SR),
             E0,
             rss,
@@ -520,132 +517,63 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         return {
             "qsci_energy": E0,
             "rss": rss,
-            "weights_full": self.weights,      # redundant 포함 전체 길이
-            "weights_valid": w_valid,          # valid conformer 기준
-            "SR_z": SR,                        # z-bitstrings
+            "weights_full": self.weights,
+            "weights_valid": w_valid,
+            "SR_z": SR,
             "HR": HR,
             "z_counts": z_counter,
             "qubo_scale": scale,
             "qubo_const": const,
+            "n_runs": n_runs,
+            "num_reads": num_reads,
         }
 
-    # ============================================================
-    # 기존 Hybrid QUBO solver (그대로 유지)
-    # ============================================================
-    def solve_qubo(self, threshold=0, cardinality=0):
-        # Step 1. Coefficient preparation
-        if self.qubo_obj is None or self.qubo_const is None:
-            self.compute_qubo_coeffs()
-
-        self.find_redundant_conformers()
-        rho_calc = self.models[self.valid_indices]
-        N, _ = rho_calc.shape
-
-        # QUBO 조립 (penalty 포함)
-        K = 10
-        Delta = 0.1
-        lam0, lam1, lam2, lam3 = 100, 100, 100, 100
-        tmin = threshold if threshold else 0.2
-        print(f"[DEBUG] solve_qubo(): assembling QUBO with tmin={tmin:.3f}, threshold={threshold}")
-        Q, const = self.compute_qubo_coeffs(
-            Delta=Delta,
-            lam0=lam0, lam1=lam1, lam2=lam2, lam3=lam3,
-            tmin=tmin, K=K,
-            threshold=threshold,
-            cardinality=cardinality,
-        )
-
-        # Step 2. Scaling & BQM construction
-        scale = max(abs(Q).max(), 1.0)
-        Q_scaled = Q / scale
-        bqm = dimod.BQM.from_qubo(Q_scaled)
-
-        # Step 3. D-Wave Hybrid Sampling
-        sampler = LeapHybridSampler()
-        sampleset = sampler.sample(bqm, label="qfit-QUBO-hybrid")
-
-        best_sample = sampleset.first.sample
-        objective_value = sampleset.first.energy * scale + const
-        sol = np.array([best_sample[i] for i in sorted(best_sample.keys())])
-
-        # Step 4. Extract x-block → continuous w
-        n_x = N * K
-        x = sol[:n_x]
-        w = np.array([np.sum(x[i*K:(i+1)*K]) * Delta for i in range(N)])
-
-        # Step 5. Save results
-        self._weights = w
-        self.objective_value = objective_value
-        self._objective_value = objective_value
-        self.construct_weights()
-
-        print("[DEBUG] Q_total stats:", Q.min(), Q.max(), np.mean(Q))
-        print("[DEBUG] const =", const)
-        print("[DEBUG] sample energy =", sampleset.first.energy)
-        print("[DEBUG] scaled objective =", sampleset.first.energy * scale)
-        print("[DEBUG] final objective =", objective_value)
-        print(f"✅ D-Wave hybrid solved QUBO: Objective={objective_value:.4f}")
 
     def rscc_solve_qubo(self, threshold=0, cardinality=0):
-        if self.qubo_obj is None or self.qubo_const is None:
-            self.compute_qubo_coeffs()
+        """
+        Compute RSCC using QSCI-derived weights only.
+        NOTE:
+          - QUBO / Hybrid solver is NOT used here.
+          - This function assumes solve_qubo_qsci() was already called.
+        """
 
-        self.find_redundant_conformers()
-        rho_calc = self.models[self.valid_indices]
-        N, _ = rho_calc.shape
+        # ---------------------------------
+        # 0. QSCI 결과 존재 여부 확인
+        # ---------------------------------
+        if self.weights is None:
+            raise RuntimeError(
+                "QSCI weights not found. "
+                "Run solve_qubo_qsci() before calling rscc_solve_qubo()."
+            )
 
-        # QUBO 조립 (penalty 포함)
-        K = 10
-        Delta = 0.1
-        lam0, lam1, lam2, lam3 = 100, 100, 100, 100
-        tmin = threshold if threshold else 0.2
-        Q, const = self.compute_qubo_coeffs(
-            Delta=Delta,
-            lam0=lam0, lam1=lam1, lam2=lam2, lam3=lam3,
-            tmin=tmin, K=K,
-            threshold=threshold,
-            cardinality=cardinality,
-        )
-
-        # Scaling & BQM construction
-        scale = max(abs(Q).max(), 1.0)
-        Q_scaled = Q / scale
-        bqm = dimod.BQM.from_qubo(Q_scaled)
-
-        # Hybrid Sampling
-        sampler = LeapHybridSampler()
-        sampleset = sampler.sample(bqm, label="qfit-QUBO-hybrid")
-
-        best_sample = sampleset.first.sample
-        objective_value = sampleset.first.energy * scale + const
-        sol = np.array([best_sample[i] for i in sorted(best_sample.keys())])
-
-        # Extract x-block → continuous w
-        n_x = N * K
-        x = sol[:n_x]
-        w = np.array([np.sum(x[i*K:(i+1)*K]) * Delta for i in range(N)])
-
-        # Save
-        self._weights = w
-        self.objective_value = objective_value
-        self._objective_value = objective_value
-        self.construct_weights()
-
-        # RSCC
+        # ---------------------------------
+        # 1. RSCC 계산 (기존 로직 최대한 유지)
+        # ---------------------------------
         cutoff = 0.002
-        filterarray = self._weights >= cutoff
-        filtered_weights = self._weights[filterarray]
+
+        weights = self.weights.copy()
+        filterarray = weights >= cutoff
+
+        filtered_weights = weights[filterarray]
         filtered_models = self.models[filterarray, :]
 
+        if filtered_weights.size == 0:
+            raise RuntimeError("All QSCI weights were filtered out by cutoff.")
+
         combined_model = np.dot(filtered_weights, filtered_models)
+
         corr = np.corrcoef(combined_model, self.target)[0, 1]
         print(f"RSCC for model of interest: {corr}")
 
+        # ---------------------------------
+        # 2. 비교용 입력 모델 (기존 유지)
+        # ---------------------------------
         if self.in_model is not None and getattr(self.in_model, "size", 0) > 0:
             input_corr = np.corrcoef(self.in_model, self.target)[0, 1]
             print(f"RSCC for comparision model: {input_corr}")
 
-        self.construct_weights()
+        return corr
+
 
     def solve_qp(self, split_threshold=3000):
         if self.quad_obj is None or self.lin_obj is None:
