@@ -1,0 +1,1043 @@
+from __future__ import annotations
+
+import re
+import json
+import csv
+import logging
+from pathlib import Path
+from collections import Counter
+from typing import Any, Optional
+
+import numpy as np
+import cvxpy as cp
+import dimod
+
+# ---- optional plotting ----
+try:
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
+
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# D-Wave QPU support (REQUIRED)
+# ============================================================
+try:
+    from dwave.system import DWaveSampler, EmbeddingComposite
+except Exception:
+    DWaveSampler = None
+    EmbeddingComposite = None
+
+
+# ============================================================
+# 1) Robust parser for your LP (e2/e3 style)
+# ============================================================
+
+_FLOAT_SP = r"(?:[+\-]?\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+\-]?\d+)?)"
+_RE_DIAG = re.compile(rf"({_FLOAT_SP})\s*x(\d+)\^2")
+_RE_OFF = re.compile(rf"({_FLOAT_SP})\s*x(\d+)\s*\*\s*x(\d+)")
+
+_RE_LABEL = re.compile(r"^\s*(e\d+):\s*(.*)$", re.IGNORECASE)
+_RE_MINIMIZE = re.compile(r"^\s*Minimize\s*$", re.IGNORECASE)
+_RE_SUBJECT = re.compile(r"^\s*Subject To\s*$", re.IGNORECASE)
+_RE_BINARY = re.compile(r"^\s*(Binary|Binaries)\s*$", re.IGNORECASE)
+
+
+def read_qplib_style_lp(lp_path: str) -> tuple[np.ndarray, int, bool]:
+    """
+    Returns:
+      Q (N x N) : objective is 0.5 * x^T Q x
+      K         : from constraint (b-only) <= K
+      sumx_eq   : whether x-sum constraint is equality (=1)
+    """
+    lines = Path(lp_path).read_text(encoding="utf-8", errors="ignore").splitlines()
+
+    # ---- objective block ----
+    try:
+        i_min = next(i for i, l in enumerate(lines) if _RE_MINIMIZE.match(l))
+    except StopIteration:
+        raise ValueError("Cannot find 'Minimize' line in LP.")
+
+    try:
+        i_sub = next(i for i, l in enumerate(lines) if i > i_min and l.strip().lower().startswith("subject to"))
+    except StopIteration:
+        raise ValueError("Cannot find 'Subject To' after 'Minimize'.")
+
+    obj_text = " ".join(l.strip() for l in lines[i_min + 1 : i_sub] if l.strip())
+    if "[" not in obj_text or "]" not in obj_text:
+        raise ValueError("Objective quadratic bracket '[ ... ]' not found in objective section.")
+
+    quad_text = obj_text.split("[", 1)[1].split("]", 1)[0]
+    quad_text = quad_text.replace("\t", " ").replace("+ -", "- ")
+
+    # ---- parse quadratic terms ----
+    x_idx_set: set[int] = set()
+    parsed_diag: list[tuple[float, int]] = []
+    parsed_off: list[tuple[float, int, int]] = []
+
+    for m in _RE_DIAG.finditer(quad_text):
+        c_str, i_str = m.group(1), m.group(2)
+        c = float(c_str.replace(" ", ""))
+        i = int(i_str)
+        x_idx_set.add(i)
+        parsed_diag.append((c, i))
+
+    for m in _RE_OFF.finditer(quad_text):
+        c_str, i_str, j_str = m.group(1), m.group(2), m.group(3)
+        c = float(c_str.replace(" ", ""))
+        i, j = int(i_str), int(j_str)
+        x_idx_set.add(i)
+        x_idx_set.add(j)
+        parsed_off.append((c, i, j))
+
+    if not x_idx_set:
+        preview = quad_text[:200].replace("\n", " ")
+        raise ValueError("No quadratic terms parsed from objective bracket.\n" f"Preview: {preview!r}")
+
+    x_indices = sorted(x_idx_set)
+    idx2pos = {idx: p for p, idx in enumerate(x_indices)}
+    N = len(x_indices)
+
+    Q = np.zeros((N, N), dtype=float)
+    for c, i in parsed_diag:
+        Q[idx2pos[i], idx2pos[i]] += c
+    for c, i, j in parsed_off:
+        ii, jj = idx2pos[i], idx2pos[j]
+        # LP is written as "... + [ ... ]/2", so off-diagonal in bracket corresponds to 2*Q_ij terms.
+        Qij = c / 2.0
+        Q[ii, jj] += Qij
+        Q[jj, ii] += Qij
+
+    Q = 0.5 * (Q + Q.T)
+
+    # ---- constraints block ----
+    try:
+        i_sub2 = next(i for i, l in enumerate(lines) if _RE_SUBJECT.match(l))
+    except StopIteration:
+        i_sub2 = i_sub
+
+    i_end = None
+    for i in range(i_sub2 + 1, len(lines)):
+        if _RE_BINARY.match(lines[i]) or lines[i].strip().lower() == "end":
+            i_end = i
+            break
+    if i_end is None:
+        i_end = len(lines)
+
+    cons_map: dict[str, str] = {}
+    cur_label: Optional[str] = None
+    cur_body: list[str] = []
+
+    def flush():
+        nonlocal cur_label, cur_body
+        if cur_label is not None:
+            cons_map[cur_label] = " ".join(cur_body).strip()
+        cur_label, cur_body = None, []
+
+    for raw in lines[i_sub2 + 1 : i_end]:
+        s = raw.strip()
+        if not s:
+            continue
+        m = _RE_LABEL.match(s)
+        if m:
+            flush()
+            cur_label = m.group(1).lower()
+            rest = m.group(2).strip()
+            cur_body = [rest] if rest else []
+        else:
+            if cur_label is not None:
+                cur_body.append(s)
+    flush()
+
+    sumx_eq = False
+    for body in cons_map.values():
+        if re.search(r"=\s*1\s*$", body) and ("x" in body) and ("b" not in body):
+            sumx_eq = True
+            break
+
+    K: Optional[int] = None
+    for body in cons_map.values():
+        mK = re.search(r"<=\s*([0-9]+)\s*$", body)
+        if not mK:
+            continue
+        rhs = int(mK.group(1))
+        if rhs > 0 and ("b" in body) and ("x" not in body):
+            K = rhs
+            break
+
+    if K is None:
+        le_lines = [b for b in cons_map.values() if "<=" in b]
+        preview = "\n".join(le_lines[:10])
+        raise ValueError(
+            "Failed to parse K from constraint like: e3: b.. + ... <= K\n"
+            f"Found {len(le_lines)} '<=' constraints. First ones:\n{preview}"
+        )
+
+    # ---- PSD sanity check (tolerate tiny negatives & auto-fix) ----
+    eigmin = float(np.linalg.eigvalsh(Q).min())
+    if eigmin < -1e-3:
+        raise ValueError(
+            f"Parsed Q seems non-PSD (min eigenvalue={eigmin:.3e}). "
+            "Parsing mismatch or nonconvex instance."
+        )
+    if eigmin < 1e-10:
+        shift = (-eigmin + 1e-10)
+        if logger.isEnabledFor(logging.INFO):
+            logger.info("Q PSD-fix: eigmin=%.3e -> add %.3e * I", eigmin, shift)
+        Q = Q + shift * np.eye(N)
+
+    return Q, K, sumx_eq
+
+
+# ============================================================
+# 2) Solver: QUBO sampling -> ENERGY-FILTERED MARGINAL -> LOCAL SEARCH -> final QP
+# ============================================================
+
+class QPLIBStyleMIQPSolver:
+    def __init__(self, Q: np.ndarray, K: int, sumx_eq: bool = True):
+        Q = np.asarray(Q, dtype=float)
+        if Q.ndim != 2 or Q.shape[0] != Q.shape[1]:
+            raise ValueError("Q must be square.")
+        self.Q = 0.5 * (Q + Q.T)
+        self.N = int(Q.shape[0])
+        self.K = int(K)
+        self.sumx_eq = bool(sumx_eq)
+
+        # outputs
+        self.z_counter: Optional[Counter[tuple[int, ...]]] = None
+        self.z_energy: Optional[dict[tuple[int, ...], float]] = None
+        self.p_marginal: Optional[np.ndarray] = None
+
+        self.z_init: Optional[np.ndarray] = None
+        self.z_hat: Optional[np.ndarray] = None
+        self.x: Optional[np.ndarray] = None
+        self.objective_value: Optional[float] = None
+
+        self._last_qubo_meta: dict[str, Any] = {}
+
+    # ------------------------------------------------------------
+    # H(z) quadratic form -> QUBO upper-tri mapping
+    # QUBO energy: sum_i Qii z_i + sum_{i<j} Qij z_i z_j == z^T H z
+    # since z^T H z = sum_i Hii z_i + 2*sum_{i<j} Hij z_i z_j,
+    # set Qii=Hii, Qij=2*Hij (i<j)
+    # ------------------------------------------------------------
+    @staticmethod
+    def _quadratic_form_to_qubo_upper(H: np.ndarray) -> np.ndarray:
+        H = np.asarray(H, dtype=float)
+        H = 0.5 * (H + H.T)
+        Q = np.zeros_like(H)
+        np.fill_diagonal(Q, np.diag(H))
+        iu = np.triu_indices_from(H, k=1)
+        Q[iu] = 2.0 * H[iu]
+        return np.triu(Q)
+
+    # ------------------------------------------------------------
+    # Scale BQM so max |bias| ~= target
+    # ------------------------------------------------------------
+    @staticmethod
+    def _scale_bqm_maxabs(
+        bqm: dimod.BinaryQuadraticModel, target: float = 1.0
+    ) -> tuple[dimod.BinaryQuadraticModel, float, float]:
+        lin = list(bqm.linear.values())
+        quad = list(bqm.quadratic.values())
+        m = 0.0
+        if lin:
+            m = max(m, float(np.max(np.abs(lin))))
+        if quad:
+            m = max(m, float(np.max(np.abs(quad))))
+        if not np.isfinite(m) or m <= 0:
+            return bqm, 1.0, float(m if np.isfinite(m) else 0.0)
+        s = float(target) / float(m)
+        bqm.scale(s)  # scales linear, quadratic, AND offset
+        return bqm, s, float(m)
+
+    # ------------------------------------------------------------
+    # compute energy threshold by weighted quantile (by occ)
+    # choose the lowest-energy states whose cumulative occ reaches frac
+    # ------------------------------------------------------------
+    @staticmethod
+    def _energy_filter_states(
+        z_occ: Counter[tuple[int, ...]],
+        z_energy: dict[tuple[int, ...], float],
+        best_frac: float,
+    ) -> list[tuple[tuple[int, ...], int]]:
+        if not z_occ:
+            return []
+        frac = float(best_frac)
+        if not (0.0 < frac <= 1.0):
+            frac = 1.0
+
+        items = []
+        for z, occ in z_occ.items():
+            if z in z_energy:
+                items.append((z, int(occ), float(z_energy[z])))
+        if not items:
+            return []
+
+        items.sort(key=lambda t: t[2])  # by energy asc
+        total = sum(occ for _, occ, _ in items)
+        target = frac * total
+
+        picked: list[tuple[tuple[int, ...], int]] = []
+        cum = 0
+        for z, occ, _E in items:
+            picked.append((z, occ))
+            cum += occ
+            if cum >= target:
+                break
+        return picked
+
+    # ------------------------------------------------------------
+    # marginal p_i = Pr(z_i=1), occ-weighted, optionally energy-filtered
+    # ------------------------------------------------------------
+    @staticmethod
+    def _compute_marginals_from_items(
+        items: list[tuple[tuple[int, ...], int]],
+        N: int,
+    ) -> tuple[np.ndarray, int]:
+        p = np.zeros(int(N), dtype=float)
+        total = 0
+        for z, occ in items:
+            o = int(occ)
+            if o <= 0:
+                continue
+            total += o
+            p += o * np.fromiter(z, dtype=float, count=int(N))
+        if total <= 0:
+            raise RuntimeError("Invalid total occurrences while computing marginals.")
+        p /= float(total)
+        return p, total
+
+    # ------------------------------------------------------------
+    # plot marginals (top-M)
+    # ------------------------------------------------------------
+    @staticmethod
+    def _plot_marginals(
+        p: np.ndarray,
+        result_tag: str,
+        out_dir: str = "marginal_plots",
+        top_m: int = 60,
+        save: bool = True,
+        show: bool = False,
+    ) -> str:
+        if plt is None:
+            raise RuntimeError("matplotlib is not available. Install with: pip install matplotlib")
+
+        p = np.asarray(p, dtype=float).reshape(-1)
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+        order = np.argsort(p)[::-1]
+        m = int(min(max(1, top_m), len(p)))
+        idx = order[:m]
+        vals = p[idx]
+
+        plt.figure()
+        plt.bar(np.arange(m), vals)
+        plt.xticks(np.arange(m), [str(int(i)) for i in idx.tolist()], rotation=90)
+        plt.ylabel("p_i = Pr(z_i=1)")
+        plt.title(f"Energy-filtered sample marginals (Top {m})")
+        plt.tight_layout()
+
+        out_path = str(Path(out_dir) / f"{result_tag}_marginals_top{m}.png")
+        if save:
+            plt.savefig(out_path, dpi=200)
+        if show:
+            plt.show()
+        plt.close()
+        return out_path
+
+    # ------------------------------------------------------------
+    # robust solve fallback
+    # ------------------------------------------------------------
+    @staticmethod
+    def _solve_problem_with_fallback(prob: cp.Problem, verbose: bool = False) -> None:
+        installed = set(cp.installed_solvers())
+        candidates: list[tuple[str, dict[str, Any]]] = [
+            ("OSQP", {"verbose": verbose, "warm_start": True, "max_iter": 200000, "eps_abs": 1e-8, "eps_rel": 1e-8}),
+            ("CLARABEL", {"verbose": verbose}),
+            ("ECOS", {"verbose": verbose}),
+            ("SCS", {"verbose": verbose, "max_iters": 50000}),
+        ]
+        last_err: Optional[Exception] = None
+        for name, opts in candidates:
+            if name not in installed:
+                continue
+            try:
+                prob.solve(solver=getattr(cp, name), **opts)
+                return
+            except Exception as e:
+                last_err = e
+        try:
+            prob.solve(verbose=verbose)
+            return
+        except Exception as e:
+            last_err = e
+        raise cp.SolverError(f"All solvers failed. Last error: {last_err}")
+
+    # ------------------------------------------------------------
+    # Reduced QP on support S (|S|=K), returns x_full and objective
+    #   min 0.5 x^T Q x
+    #   s.t. x>=0, x_i=0 outside S, sum(x)=1 (or <=1)
+    # ------------------------------------------------------------
+    def solve_qp_on_support(
+        self,
+        support_idx: np.ndarray,
+        verbose: bool = False,
+    ) -> tuple[np.ndarray, float]:
+        S = np.asarray(support_idx, dtype=int).reshape(-1)
+        if S.size == 0:
+            raise RuntimeError("Empty support.")
+        if np.any(S < 0) or np.any(S >= self.N):
+            raise ValueError("Support index out of range.")
+
+        # submatrix
+        Qs = self.Q[np.ix_(S, S)]
+        Qpsd = cp.psd_wrap(Qs)
+
+        xs = cp.Variable(S.size)
+        obj = cp.Minimize(0.5 * cp.quad_form(xs, Qpsd))
+
+        cons = [xs >= 0.0]
+        if self.sumx_eq:
+            cons.append(cp.sum(xs) == 1.0)
+        else:
+            cons.append(cp.sum(xs) <= 1.0)
+
+        prob = cp.Problem(obj, cons)
+        self._solve_problem_with_fallback(prob, verbose=verbose)
+
+        if prob.status not in ("optimal", "optimal_inaccurate") or xs.value is None:
+            raise RuntimeError(f"QP failed: status={prob.status}")
+
+        x_full = np.zeros(self.N, dtype=float)
+        x_full[S] = np.asarray(xs.value, dtype=float).reshape(-1)
+        return x_full, float(prob.value)
+
+    # ------------------------------------------------------------
+    # surrogate H(alpha) on z
+    # ------------------------------------------------------------
+    def _build_effective_hamiltonian(self, alpha: float) -> np.ndarray:
+        a = float(alpha)
+        return 0.5 * (a * a) * self.Q
+
+    # ------------------------------------------------------------
+    # cardinality slack QUBO for sum(z) <= K_card
+    # via ( sum(z) + p^T y - K_card )^2
+    # ------------------------------------------------------------
+    def _build_z_only_qubo_with_slack(self, K_card: int, lam: float = 10.0):
+        N = self.N
+        K_card = int(max(1, K_card))
+        K_eff = int(K_card)
+
+        alpha_ref = 1.0 / float(K_eff)
+        H_unscaled = self._build_effective_hamiltonian(alpha=alpha_ref)
+
+        # internal scaling for conditioning (final BQM scaling is separate)
+        H_scale = float(np.max(np.abs(H_unscaled)))
+        H_scale_used = H_scale if H_scale > 0 else 1.0
+        H = H_unscaled / H_scale_used
+
+        base = float(np.mean(np.abs(H))) if np.any(H) else 1.0
+        lam_card = float(lam) * base
+
+        self._last_qubo_meta = {
+            "alpha_ref": float(alpha_ref),
+            "K_card": int(K_card),
+            "K_eff": int(K_eff),
+            "H_scale": float(H_scale_used),
+            "base": float(base),
+            "lam_card": float(lam_card),
+        }
+
+        m1 = int(np.ceil(np.log2(K_card + 1))) if K_card > 0 else 1
+        p1 = np.array([2**j for j in range(m1)], dtype=float)
+
+        n_tot = N + m1
+        Q = np.zeros((n_tot, n_tot), dtype=float)
+
+        # H part (correct QUBO mapping)
+        H_qubo = self._quadratic_form_to_qubo_upper(H)
+        Q[:N, :N] += H_qubo
+
+        # penalty: (sum(z) + p1^T y - K_card)^2
+        # expand:
+        #  sum(z)^2 gives: diag + 2 off diag
+        #  -2K sum(z) gives diag shift
+        for i in range(N):
+            Q[i, i] += lam_card * (1.0 - 2.0 * K_card)
+        for i in range(N):
+            for j in range(i + 1, N):
+                Q[i, j] += 2.0 * lam_card
+
+        # y terms
+        for a in range(m1):
+            ia = N + a
+            Q[ia, ia] += lam_card * (p1[a] ** 2 - 2.0 * K_card * p1[a])
+            for b in range(a + 1, m1):
+                ib = N + b
+                Q[ia, ib] += 2.0 * lam_card * p1[a] * p1[b]
+
+        # cross z-y: 2 * sum(z) * p^T y
+        for i in range(N):
+            for a in range(m1):
+                ia = N + a
+                Q[i, ia] += 2.0 * lam_card * p1[a]
+
+        Q = np.triu(Q)
+        const_scaled = lam_card * (K_card ** 2)
+        return Q, const_scaled, N, m1, K_eff
+
+    @staticmethod
+    def _qubo_matrix_to_dict(Q: np.ndarray, tol: float = 0.0) -> dict[tuple[int, int], float]:
+        Q = np.asarray(Q, dtype=float)
+        n = Q.shape[0]
+        qubo: dict[tuple[int, int], float] = {}
+        for i in range(n):
+            row = Q[i, i:]
+            nz = np.where(np.abs(row) > tol)[0] if tol > 0 else np.where(row != 0.0)[0]
+            for k in nz:
+                j = i + int(k)
+                qubo[(i, j)] = float(row[k])
+        return qubo
+
+    # ------------------------------------------------------------
+    # Local search (swap): start from z_init (size K),
+    # repeatedly try swapping one active with one inactive to reduce QP objective
+    # ------------------------------------------------------------
+    def local_search_swap(
+        self,
+        z0: np.ndarray,
+        p: np.ndarray,
+        K_pick: int,
+        qp_verbose: bool,
+        iters: int = 20,
+        active_pool: int = 8,
+        inactive_pool: int = 64,
+        tol_improve: float = 1e-10,
+        first_improve: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray, float, list[dict[str, Any]]]:
+        z = np.asarray(z0, dtype=int).reshape(-1).copy()
+        if int(z.sum()) != int(K_pick):
+            raise ValueError("local_search_swap expects exactly K_pick ones in z0.")
+
+        p = np.asarray(p, dtype=float).reshape(-1)
+        if p.shape[0] != self.N:
+            raise ValueError("p length mismatch in local search.")
+
+        cache: dict[tuple[int, ...], float] = {}
+        trace: list[dict[str, Any]] = []
+
+        def support_tuple(zv: np.ndarray) -> tuple[int, ...]:
+            return tuple(np.where(zv > 0)[0].tolist())
+
+        # initial eval
+        sup = np.where(z > 0)[0]
+        x_cur, f_cur = self.solve_qp_on_support(sup, verbose=qp_verbose)
+        cache[support_tuple(z)] = float(f_cur)
+
+        trace.append({"iter": 0, "objective": float(f_cur)})
+
+        for t in range(1, int(max(0, iters)) + 1):
+            sup = np.where(z > 0)[0]
+            nonsup = np.where(z == 0)[0]
+
+            # choose candidate pools using marginal confidence
+            # - remove candidates: active with SMALL p
+            # - add candidates: inactive with LARGE p
+            active_sorted = sup[np.argsort(p[sup])]  # ascending p
+            inactive_sorted = nonsup[np.argsort(p[nonsup])[::-1]]  # descending p
+
+            A = active_sorted[: int(min(active_pool, active_sorted.size))]
+            B = inactive_sorted[: int(min(inactive_pool, inactive_sorted.size))]
+
+            best_f = float(f_cur)
+            best_swap: Optional[tuple[int, int]] = None
+            best_x: Optional[np.ndarray] = None
+
+            for i_out in A:
+                for j_in in B:
+                    # propose swap
+                    z2 = z.copy()
+                    z2[int(i_out)] = 0
+                    z2[int(j_in)] = 1
+                    key = support_tuple(z2)
+                    if key in cache:
+                        f2 = cache[key]
+                        if f2 + tol_improve < best_f:
+                            best_f = float(f2)
+                            best_swap = (int(i_out), int(j_in))
+                            best_x = None  # we can recompute later if needed
+                            if first_improve:
+                                break
+                    else:
+                        sup2 = np.where(z2 > 0)[0]
+                        try:
+                            x2, f2 = self.solve_qp_on_support(sup2, verbose=qp_verbose)
+                        except Exception:
+                            continue
+                        cache[key] = float(f2)
+                        if float(f2) + tol_improve < best_f:
+                            best_f = float(f2)
+                            best_swap = (int(i_out), int(j_in))
+                            best_x = x2
+                            if first_improve:
+                                break
+                if first_improve and best_swap is not None:
+                    break
+
+            if best_swap is None:
+                trace.append({"iter": t, "objective": float(f_cur), "stop": "no_improvement"})
+                break
+
+            # apply best swap
+            i_out, j_in = best_swap
+            z[i_out] = 0
+            z[j_in] = 1
+
+            # update current f
+            if best_x is None:
+                sup = np.where(z > 0)[0]
+                x_cur, f_cur = self.solve_qp_on_support(sup, verbose=qp_verbose)
+            else:
+                x_cur = best_x
+                f_cur = best_f
+
+            trace.append(
+                {
+                    "iter": t,
+                    "objective": float(f_cur),
+                    "swap_out": int(i_out),
+                    "swap_in": int(j_in),
+                }
+            )
+
+        return z, x_cur, float(f_cur), trace
+
+    # ------------------------------------------------------------
+    # Main solve:
+    #   QUBO sampling -> energy-filtered marginal -> z_init -> local search -> final x,obj
+    # ------------------------------------------------------------
+    def solve(
+        self,
+        cardinality: Optional[int] = None,
+        num_reads: int = 3000,
+        n_runs: int = 1,
+        lam: float = 10.0,
+        sampler: Optional[Any] = None,
+        filter_empty: bool = True,
+
+        # scaling
+        bqm_maxabs_target: float = 1.0,
+        auto_scale: bool = False,
+
+        # marginal
+        marginal_best_frac: float = 0.2,   # use lowest-energy states with this cumulative occ mass
+        plot_marginal: bool = True,
+        marginal_plot_top_m: int = 60,
+
+        # local search (ALWAYS RUN; set iters=0 if you really want to disable)
+        ls_iters: int = 20,
+        ls_active_pool: int = 8,
+        ls_inactive_pool: int = 64,
+        ls_tol_improve: float = 1e-10,
+        ls_first_improve: bool = False,
+
+        # output / debug
+        qp_verbose: bool = False,
+        result_tag: str = "run",
+    ) -> dict[str, Any]:
+        K_card = int(cardinality) if (cardinality is not None and int(cardinality) > 0) else int(self.K)
+
+        Qmat, const_scaled, N, m_card, K_eff = self._build_z_only_qubo_with_slack(K_card=K_card, lam=lam)
+        qubo = self._qubo_matrix_to_dict(Qmat, tol=0.0)
+        bqm = dimod.BQM.from_qubo(qubo)
+        bqm.offset += float(const_scaled)
+
+        # --- force D-Wave QPU sampler ---
+        if sampler is None:
+            if DWaveSampler is None or EmbeddingComposite is None:
+                raise RuntimeError(
+                    "D-Wave sampler is required but not available.\n"
+                    "Install/configure:\n"
+                    "  pip install dwave-system\n"
+                    "  dwave config create"
+                )
+            sampler = EmbeddingComposite(DWaveSampler())
+
+        # normalize/scale BQM so max |bias| ~= target
+        bqm_scale_factor = 1.0
+        bqm_pre_maxabs = 0.0
+        if bqm_maxabs_target is not None and float(bqm_maxabs_target) > 0:
+            bqm, bqm_scale_factor, bqm_pre_maxabs = self._scale_bqm_maxabs(bqm, target=float(bqm_maxabs_target))
+
+        # -------------------------
+        # sample
+        # -------------------------
+        z_counter: Counter[tuple[int, ...]] = Counter()
+        z_energy: dict[tuple[int, ...], float] = {}
+
+        for _ in range(int(n_runs)):
+            sampleset = sampler.sample(bqm, num_reads=int(num_reads), auto_scale=bool(auto_scale))
+            for rec in sampleset.data(fields=["sample", "energy", "num_occurrences"]):
+                sample = rec.sample
+                occ = int(getattr(rec, "num_occurrences", 1) or 1)
+                energy = float(getattr(rec, "energy", np.nan))
+                z = tuple(int(sample[i]) for i in range(N))  # ignore slack bits
+
+                if filter_empty and sum(z) == 0:
+                    continue
+
+                z_counter[z] += occ
+                # energy is deterministic for a given z (same BQM), but keep the minimum just in case
+                if np.isfinite(energy):
+                    prev = z_energy.get(z)
+                    if prev is None or energy < prev:
+                        z_energy[z] = energy
+
+        if not z_counter:
+            raise RuntimeError("No valid z bitstrings from sampler")
+
+        self.z_counter = z_counter
+        self.z_energy = z_energy
+
+        # -------------------------
+        # energy-filtered marginal p_i
+        # -------------------------
+        picked_items = self._energy_filter_states(
+            z_occ=z_counter,
+            z_energy=z_energy,
+            best_frac=float(marginal_best_frac),
+        )
+        if not picked_items:
+            # fallback: use all samples if energies missing
+            picked_items = [(z, int(occ)) for z, occ in z_counter.items()]
+
+        p, total_used = self._compute_marginals_from_items(picked_items, N=self.N)
+        self.p_marginal = p
+
+        marginal_plot_path = None
+        if plot_marginal:
+            try:
+                marginal_plot_path = self._plot_marginals(
+                    p=p,
+                    result_tag=result_tag,
+                    out_dir="marginal_plots",
+                    top_m=int(marginal_plot_top_m),
+                    save=True,
+                    show=False,
+                )
+            except Exception:
+                marginal_plot_path = None
+
+        # -------------------------
+        # z_init from top-K marginals
+        # -------------------------
+        K_pick = int(max(1, min(K_eff, self.N)))
+        idx0 = np.argsort(p)[-K_pick:]
+        z_init = np.zeros(self.N, dtype=int)
+        z_init[idx0] = 1
+        self.z_init = z_init
+
+        sup0 = np.where(z_init > 0)[0]
+        x0, obj0 = self.solve_qp_on_support(sup0, verbose=qp_verbose)
+
+        # -------------------------
+        # local search (swap) on true objective F_tilde(z)
+        # -------------------------
+        z_ls, x_ls, obj_ls, ls_trace = self.local_search_swap(
+            z0=z_init,
+            p=p,
+            K_pick=K_pick,
+            qp_verbose=qp_verbose,
+            iters=int(ls_iters),
+            active_pool=int(ls_active_pool),
+            inactive_pool=int(ls_inactive_pool),
+            tol_improve=float(ls_tol_improve),
+            first_improve=bool(ls_first_improve),
+        )
+
+        self.z_hat = z_ls
+        self.x = x_ls
+        self.objective_value = float(obj_ls)
+
+        return {
+            "K_card": int(K_card),
+            "K_eff": int(K_eff),
+            "K_pick": int(K_pick),
+
+            # sampling stats
+            "num_unique_z": int(len(z_counter)),
+            "total_occ": int(sum(z_counter.values())),
+            "marginal_best_frac": float(marginal_best_frac),
+            "marginal_total_used": int(total_used),
+
+            # scaling stats
+            "bqm_pre_maxabs": float(bqm_pre_maxabs),
+            "bqm_scale_factor": float(bqm_scale_factor),
+            "bqm_maxabs_target": float(bqm_maxabs_target),
+            "auto_scale": bool(auto_scale),
+
+            # marginals
+            "p_marginal": p,
+            "marginal_plot_path": marginal_plot_path,
+
+            # init solution
+            "z_init": z_init,
+            "active_init": sup0.tolist(),
+            "objective_init": float(obj0),
+
+            # local-search solution (final)
+            "z_hat": z_ls,
+            "active_final": np.where(z_ls > 0)[0].tolist(),
+            "objective": float(obj_ls),
+            "x": x_ls,
+
+            # trace
+            "ls_iters": int(ls_iters),
+            "ls_active_pool": int(ls_active_pool),
+            "ls_inactive_pool": int(ls_inactive_pool),
+            "ls_tol_improve": float(ls_tol_improve),
+            "ls_first_improve": bool(ls_first_improve),
+            "ls_trace": ls_trace,
+        }
+
+
+# ============================================================
+# 3) Convenience: load LP -> solve
+# ============================================================
+
+def solve_qplib_style_lp(
+    lp_path: str,
+    cardinality: Optional[int] = None,
+    num_reads: int = 3000,
+    n_runs: int = 1,
+    lam: float = 10.0,
+    sampler: Optional[Any] = None,
+
+    bqm_maxabs_target: float = 1.0,
+    auto_scale: bool = False,
+
+    marginal_best_frac: float = 0.2,
+    plot_marginal: bool = True,
+    marginal_plot_top_m: int = 60,
+
+    ls_iters: int = 20,
+    ls_active_pool: int = 8,
+    ls_inactive_pool: int = 64,
+    ls_tol_improve: float = 1e-10,
+    ls_first_improve: bool = False,
+
+    qp_verbose: bool = False,
+):
+    Q, K, sumx_eq = read_qplib_style_lp(lp_path)
+    tag = Path(lp_path).stem
+
+    solver = QPLIBStyleMIQPSolver(Q=Q, K=K, sumx_eq=sumx_eq)
+    out = solver.solve(
+        cardinality=cardinality,
+        num_reads=num_reads,
+        n_runs=n_runs,
+        lam=lam,
+        sampler=sampler,
+        bqm_maxabs_target=float(bqm_maxabs_target),
+        auto_scale=bool(auto_scale),
+        marginal_best_frac=float(marginal_best_frac),
+        plot_marginal=bool(plot_marginal),
+        marginal_plot_top_m=int(marginal_plot_top_m),
+        ls_iters=int(ls_iters),
+        ls_active_pool=int(ls_active_pool),
+        ls_inactive_pool=int(ls_inactive_pool),
+        ls_tol_improve=float(ls_tol_improve),
+        ls_first_improve=bool(ls_first_improve),
+        qp_verbose=bool(qp_verbose),
+        result_tag=tag,
+    )
+    return out
+
+
+# ============================================================
+# 4) CLI entrypoint
+# ============================================================
+
+def _extract_N_from_name(p: Path) -> int:
+    m = re.search(r"N(\d+)", p.stem)
+    return int(m.group(1)) if m else -1
+
+
+def _autopick_lp() -> Optional[Path]:
+    cands = sorted(Path(".").glob("QPLIB_style_*.lp"), key=_extract_N_from_name)
+    if cands:
+        return cands[-1]
+    any_lp = list(Path(".").glob("*.lp"))
+    if not any_lp:
+        return None
+    any_lp.sort(key=lambda p: p.stat().st_mtime)
+    return any_lp[-1]
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="Solve LP via D-Wave QPU -> energy-filtered marginals -> swap local search -> fixed-support QP"
+    )
+
+    parser.add_argument("lp_pos", nargs="?", default=None, help="(positional) Path to LP file.")
+    parser.add_argument("--lp", default=None, help="Path to LP file (optional, overrides positional).")
+
+    parser.add_argument("--K", type=int, default=None, help="Cardinality cap. If omitted, uses K parsed from LP.")
+    parser.add_argument("--num-reads", type=int, default=3000, help="D-Wave num_reads (default: 3000)")
+    parser.add_argument("--n-runs", type=int, default=1, help="How many sampling runs (default: 1)")
+    parser.add_argument("--lam", type=float, default=10.0, help="Penalty weight scale (default: 10.0)")
+
+    parser.add_argument("--verbose", action="store_true", help="Enable INFO logs")
+    parser.add_argument("--qp-verbose", action="store_true", help="Enable CVXPY solver verbose logs (debug)")
+
+    # BQM normalization knobs
+    parser.add_argument("--bqm-maxabs-target", type=float, default=1.0, help="Scale BQM so max |bias| ~= target (default: 1.0)")
+    parser.add_argument("--auto-scale", action="store_true", help="Let D-Wave auto_scale (default: False if we normalize ourselves)")
+
+    # marginal knobs
+    parser.add_argument("--marginal-best-frac", type=float, default=0.2, help="Use lowest-energy states covering this occ-mass fraction (default: 0.2)")
+    parser.add_argument("--no-marginal-plot", action="store_true", help="Disable marginal plot")
+    parser.add_argument("--marginal-plot-top-m", type=int, default=60, help="Plot top-M marginals (default: 60)")
+
+    # local search knobs (default ON)
+    parser.add_argument("--ls-iters", type=int, default=20, help="Swap local search iterations (default: 20)")
+    parser.add_argument("--ls-active-pool", type=int, default=8, help="Candidates to remove (lowest p among active) (default: 8)")
+    parser.add_argument("--ls-inactive-pool", type=int, default=64, help="Candidates to add (highest p among inactive) (default: 64)")
+    parser.add_argument("--ls-tol", type=float, default=1e-10, help="Improvement tolerance (default: 1e-10)")
+    parser.add_argument("--ls-first-improve", action="store_true", help="Use first-improvement instead of best-improvement")
+
+    # D-Wave parameters
+    parser.add_argument("--annealing-time", type=int, default=20, help="D-Wave annealing_time (microseconds)")
+    parser.add_argument("--chain-strength", type=float, default=None, help="D-Wave chain_strength (default: auto)")
+    parser.add_argument("--num-spin-reversal-transforms", type=int, default=0, help="D-Wave num_spin_reversal_transforms")
+
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=(logging.INFO if args.verbose else logging.WARNING),
+        format="%(levelname)s:%(name)s:%(message)s",
+    )
+
+    # choose lp path
+    if args.lp is not None:
+        lp_path = Path(args.lp)
+    elif args.lp_pos is not None:
+        lp_path = Path(args.lp_pos)
+    else:
+        picked = _autopick_lp()
+        if picked is None:
+            print("[ERROR] No LP file specified and no *.lp found in current directory.", file=sys.stderr)
+            sys.exit(1)
+        lp_path = picked
+        if args.verbose:
+            print(f"[INFO] Auto-selected LP: {lp_path}")
+
+    if not lp_path.exists():
+        print(f"[ERROR] LP file not found: {lp_path}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[INFO] Reading LP: {lp_path.resolve()}")
+
+    # D-Wave sampler setup
+    if DWaveSampler is None or EmbeddingComposite is None:
+        print(
+            "[ERROR] D-Wave is required but not available.\n"
+            "Install and configure:\n"
+            "  pip install dwave-system\n"
+            "  dwave config create",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    qpu = DWaveSampler()
+    sampler_base = EmbeddingComposite(qpu)
+
+    if args.verbose:
+        try:
+            print(f"[INFO] Using D-Wave QPU: {qpu.solver.name}")
+        except Exception:
+            print("[INFO] Using D-Wave QPU")
+
+    class _SamplerWrapper:
+        def __init__(self, base, extra_kwargs: dict[str, Any]):
+            self.base = base
+            self.extra_kwargs = extra_kwargs
+
+        def sample(self, bqm, **kwargs):
+            merged = dict(self.extra_kwargs)
+            merged.update(kwargs)
+            return self.base.sample(bqm, **merged)
+
+    extra_qpu_kwargs: dict[str, Any] = {
+        "annealing_time": int(args.annealing_time),
+    }
+    if args.chain_strength is not None:
+        extra_qpu_kwargs["chain_strength"] = float(args.chain_strength)
+    if int(args.num_spin_reversal_transforms) > 0:
+        extra_qpu_kwargs["num_spin_reversal_transforms"] = int(args.num_spin_reversal_transforms)
+
+    sampler_obj = _SamplerWrapper(sampler_base, extra_qpu_kwargs)
+
+    out = solve_qplib_style_lp(
+        lp_path=str(lp_path),
+        cardinality=args.K,
+        num_reads=int(args.num_reads),
+        n_runs=int(args.n_runs),
+        lam=float(args.lam),
+        sampler=sampler_obj,
+        bqm_maxabs_target=float(args.bqm_maxabs_target),
+        auto_scale=bool(args.auto_scale),
+        marginal_best_frac=float(args.marginal_best_frac),
+        plot_marginal=(not args.no_marginal_plot),
+        marginal_plot_top_m=int(args.marginal_plot_top_m),
+        ls_iters=int(args.ls_iters),
+        ls_active_pool=int(args.ls_active_pool),
+        ls_inactive_pool=int(args.ls_inactive_pool),
+        ls_tol_improve=float(args.ls_tol),
+        ls_first_improve=bool(args.ls_first_improve),
+        qp_verbose=bool(args.qp_verbose),
+    )
+
+    z_init = np.asarray(out["z_init"], dtype=int)
+    z_hat = np.asarray(out["z_hat"], dtype=int)
+
+    print("=== DONE ===")
+    print(f"LP              : {lp_path}")
+    print(f"K_card          : {out['K_card']}")
+    print(f"K_eff           : {out['K_eff']}")
+    print(f"K_pick          : {out['K_pick']}")
+
+    print(f"unique_z        : {out['num_unique_z']}")
+    print(f"total_occ       : {out['total_occ']}")
+    print(f"marg_best_frac  : {out['marginal_best_frac']}")
+    print(f"marg_occ_used   : {out['marginal_total_used']}")
+
+    print(f"bqm_pre_maxabs  : {out['bqm_pre_maxabs']}")
+    print(f"bqm_scale_factor: {out['bqm_scale_factor']}")
+    print(f"bqm_target      : {out['bqm_maxabs_target']}")
+    print(f"auto_scale      : {out['auto_scale']}")
+
+    init_idx = out["active_init"]
+    final_idx = out["active_final"]
+
+    print(f"objective_init  : {out['objective_init']:.12g}")
+    print(f"objective_final : {out['objective']:.12g}")
+
+    print(f"active_init     : {init_idx[:30]}{' ...' if len(init_idx) > 30 else ''}")
+    print(f"active_final    : {final_idx[:30]}{' ...' if len(final_idx) > 30 else ''}")
+
+    if out.get("marginal_plot_path"):
+        print(f"marginal_plot   : {out['marginal_plot_path']}")
+
+    # show last LS step
+    trace = out.get("ls_trace") or []
+    if trace:
+        last = trace[-1]
+        print(f"ls_steps        : {len(trace)-1}")
+        if "stop" in last:
+            print(f"ls_stop         : {last['stop']}")
