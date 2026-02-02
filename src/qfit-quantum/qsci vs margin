@@ -1,0 +1,1224 @@
+from __future__ import annotations
+
+import re
+import json
+import csv
+import logging
+from pathlib import Path
+from collections import Counter
+from typing import Any, Optional
+
+import numpy as np
+import cvxpy as cp
+import dimod
+
+# ---- ADDED: plotting ----
+try:
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
+
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# D-Wave QPU support (REQUIRED)
+# ============================================================
+try:
+    from dwave.system import DWaveSampler, EmbeddingComposite
+except Exception:
+    DWaveSampler = None
+    EmbeddingComposite = None
+
+# ============================================================
+# 1) Robust parser for your LP (e2/e3 style)
+# ============================================================
+
+_FLOAT_SP = r"(?:[+\-]?\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+\-]?\d+)?)"
+_RE_DIAG = re.compile(rf"({_FLOAT_SP})\s*x(\d+)\^2")
+_RE_OFF = re.compile(rf"({_FLOAT_SP})\s*x(\d+)\s*\*\s*x(\d+)")
+
+_RE_LABEL = re.compile(r"^\s*(e\d+):\s*(.*)$", re.IGNORECASE)
+_RE_MINIMIZE = re.compile(r"^\s*Minimize\s*$", re.IGNORECASE)
+_RE_SUBJECT = re.compile(r"^\s*Subject To\s*$", re.IGNORECASE)
+_RE_BINARY = re.compile(r"^\s*(Binary|Binaries)\s*$", re.IGNORECASE)
+
+
+def read_qplib_style_lp(lp_path: str) -> tuple[np.ndarray, int, bool]:
+    """
+    Returns:
+      Q (N x N) : objective is 0.5 * x^T Q x
+      K         : from constraint (b-only) <= K
+      sumx_eq   : whether x-sum constraint is equality (=1)
+    """
+    lines = Path(lp_path).read_text(encoding="utf-8", errors="ignore").splitlines()
+
+    # ---- objective block ----
+    try:
+        i_min = next(i for i, l in enumerate(lines) if _RE_MINIMIZE.match(l))
+    except StopIteration:
+        raise ValueError("Cannot find 'Minimize' line in LP.")
+
+    try:
+        i_sub = next(i for i, l in enumerate(lines) if i > i_min and l.strip().lower().startswith("subject to"))
+    except StopIteration:
+        raise ValueError("Cannot find 'Subject To' after 'Minimize'.")
+
+    obj_text = " ".join(l.strip() for l in lines[i_min + 1 : i_sub] if l.strip())
+    if "[" not in obj_text or "]" not in obj_text:
+        raise ValueError("Objective quadratic bracket '[ ... ]' not found in objective section.")
+
+    quad_text = obj_text.split("[", 1)[1].split("]", 1)[0]
+    quad_text = quad_text.replace("\t", " ").replace("+ -", "- ")
+
+    # ---- parse quadratic terms ----
+    x_idx_set: set[int] = set()
+    parsed_diag: list[tuple[float, int]] = []
+    parsed_off: list[tuple[float, int, int]] = []
+
+    for m in _RE_DIAG.finditer(quad_text):
+        c_str, i_str = m.group(1), m.group(2)
+        c = float(c_str.replace(" ", ""))
+        i = int(i_str)
+        x_idx_set.add(i)
+        parsed_diag.append((c, i))
+
+    for m in _RE_OFF.finditer(quad_text):
+        c_str, i_str, j_str = m.group(1), m.group(2), m.group(3)
+        c = float(c_str.replace(" ", ""))
+        i, j = int(i_str), int(j_str)
+        x_idx_set.add(i)
+        x_idx_set.add(j)
+        parsed_off.append((c, i, j))
+
+    if not x_idx_set:
+        preview = quad_text[:200].replace("\n", " ")
+        raise ValueError("No quadratic terms parsed from objective bracket.\n" f"Preview: {preview!r}")
+
+    x_indices = sorted(x_idx_set)
+    idx2pos = {idx: p for p, idx in enumerate(x_indices)}
+    N = len(x_indices)
+
+    Q = np.zeros((N, N), dtype=float)
+    for c, i in parsed_diag:
+        Q[idx2pos[i], idx2pos[i]] += c
+    for c, i, j in parsed_off:
+        ii, jj = idx2pos[i], idx2pos[j]
+        # LP is written as "... + [ ... ]/2", so off-diagonal in bracket corresponds to 2*Q_ij terms.
+        Qij = c / 2.0
+        Q[ii, jj] += Qij
+        Q[jj, ii] += Qij
+
+    Q = 0.5 * (Q + Q.T)
+
+    # ---- constraints block ----
+    try:
+        i_sub2 = next(i for i, l in enumerate(lines) if _RE_SUBJECT.match(l))
+    except StopIteration:
+        i_sub2 = i_sub
+
+    i_end = None
+    for i in range(i_sub2 + 1, len(lines)):
+        if _RE_BINARY.match(lines[i]) or lines[i].strip().lower() == "end":
+            i_end = i
+            break
+    if i_end is None:
+        i_end = len(lines)
+
+    cons_map: dict[str, str] = {}
+    cur_label: Optional[str] = None
+    cur_body: list[str] = []
+
+    def flush():
+        nonlocal cur_label, cur_body
+        if cur_label is not None:
+            cons_map[cur_label] = " ".join(cur_body).strip()
+        cur_label, cur_body = None, []
+
+    for raw in lines[i_sub2 + 1 : i_end]:
+        s = raw.strip()
+        if not s:
+            continue
+        m = _RE_LABEL.match(s)
+        if m:
+            flush()
+            cur_label = m.group(1).lower()
+            rest = m.group(2).strip()
+            cur_body = [rest] if rest else []
+        else:
+            if cur_label is not None:
+                cur_body.append(s)
+    flush()
+
+    sumx_eq = False
+    for body in cons_map.values():
+        if re.search(r"=\s*1\s*$", body) and ("x" in body) and ("b" not in body):
+            sumx_eq = True
+            break
+
+    K: Optional[int] = None
+    for body in cons_map.values():
+        mK = re.search(r"<=\s*([0-9]+)\s*$", body)
+        if not mK:
+            continue
+        rhs = int(mK.group(1))
+        if rhs > 0 and ("b" in body) and ("x" not in body):
+            K = rhs
+            break
+
+    if K is None:
+        le_lines = [b for b in cons_map.values() if "<=" in b]
+        preview = "\n".join(le_lines[:10])
+        raise ValueError(
+            "Failed to parse K from constraint like: e3: b.. + ... <= K\n"
+            f"Found {len(le_lines)} '<=' constraints. First ones:\n{preview}"
+        )
+
+    # ---- PSD sanity check (tolerate tiny negatives & auto-fix) ----
+    eigmin = float(np.linalg.eigvalsh(Q).min())
+    if eigmin < -1e-3:
+        raise ValueError(
+            f"Parsed Q seems non-PSD (min eigenvalue={eigmin:.3e}). "
+            "Parsing mismatch or nonconvex instance."
+        )
+    if eigmin < 1e-10:
+        shift = (-eigmin + 1e-10)
+        if logger.isEnabledFor(logging.INFO):
+            logger.info("Q PSD-fix: eigmin=%.3e -> add %.3e * I", eigmin, shift)
+        Q = Q + shift * np.eye(N)
+
+    return Q, K, sumx_eq
+
+
+# ============================================================
+# 2) QUBO->QSCI->support-fixed QP solver for this MIQP
+# ============================================================
+
+class QPLIBStyleMIQPSolver:
+    def __init__(self, Q: np.ndarray, K: int, sumx_eq: bool = True):
+        Q = np.asarray(Q, dtype=float)
+        if Q.ndim != 2 or Q.shape[0] != Q.shape[1]:
+            raise ValueError("Q must be square.")
+        self.Q = 0.5 * (Q + Q.T)
+        self.N = int(Q.shape[0])
+        self.K = int(K)
+        self.sumx_eq = bool(sumx_eq)
+
+        self.z_counter: Optional[Counter[tuple[int, ...]]] = None
+        self.SR: Optional[list[tuple[int, ...]]] = None
+        self.z_bar: Optional[np.ndarray] = None
+        self.z_hat: Optional[np.ndarray] = None
+        self.p_marginal_sample: Optional[np.ndarray] = None
+
+        self.x: Optional[np.ndarray] = None
+        self.objective_value: Optional[float] = None
+
+        self._last_qubo_meta: dict[str, Any] = {}
+
+    # ============================================================
+    # H(z) quadratic form -> QUBO upper-tri mapping
+    # QUBO energy: sum_i Qii z_i + sum_{i<j} Qij z_i z_j  ==  z^T H z
+    # since z^T H z = sum_i Hii z_i + 2*sum_{i<j} Hij z_i z_j,
+    # set Qii=Hii, Qij=2*Hij (i<j)
+    # ============================================================
+    @staticmethod
+    def _quadratic_form_to_qubo_upper(H: np.ndarray) -> np.ndarray:
+        H = np.asarray(H, dtype=float)
+        H = 0.5 * (H + H.T)
+        Q = np.zeros_like(H)
+        np.fill_diagonal(Q, np.diag(H))
+        iu = np.triu_indices_from(H, k=1)
+        Q[iu] = 2.0 * H[iu]
+        return np.triu(Q)
+
+    # ============================================================
+    # Scale BQM so max |bias| ~= target
+    # ============================================================
+    @staticmethod
+    def _scale_bqm_maxabs(
+        bqm: dimod.BinaryQuadraticModel,
+        target: float = 1.0
+    ) -> tuple[dimod.BinaryQuadraticModel, float, float]:
+        lin = list(bqm.linear.values())
+        quad = list(bqm.quadratic.values())
+        m = 0.0
+        if lin:
+            m = max(m, float(np.max(np.abs(lin))))
+        if quad:
+            m = max(m, float(np.max(np.abs(quad))))
+        if not np.isfinite(m) or m <= 0:
+            return bqm, 1.0, float(m if np.isfinite(m) else 0.0)
+        s = float(target) / float(m)
+        bqm.scale(s)  # scales linear, quadratic, AND offset
+        return bqm, s, float(m)
+
+    # ============================================================
+    # NEW: Sample-marginal p_i = Pr(z_i=1) from z_counter (occ-weighted)
+    # ============================================================
+    @staticmethod
+    def _compute_sample_marginals(
+        z_counter: Counter[tuple[int, ...]],
+        N: int,
+        top_z: Optional[int] = None,
+    ) -> tuple[np.ndarray, int]:
+        """
+        Returns (p, total_occ_used)
+          p[i] = Pr(z_i=1) estimated from samples (weighted by num_occurrences)
+        If top_z is given, only uses the top-occurring top_z bitstrings (speed/robustness knob).
+        """
+        if not z_counter:
+            raise ValueError("z_counter is empty")
+
+        if top_z is None:
+            items = list(z_counter.items())
+        else:
+            items = z_counter.most_common(int(max(1, top_z)))
+
+        p = np.zeros(int(N), dtype=float)
+        total = 0
+        for z, occ in items:
+            o = int(occ)
+            if o <= 0:
+                continue
+            total += o
+            # z is tuple[int,...]
+            # accumulate without making huge intermediate if possible
+            p += o * np.fromiter(z, dtype=float, count=int(N))
+        if total <= 0:
+            raise RuntimeError("Invalid total occurrences while computing marginals")
+        p /= float(total)
+        return p, int(total)
+
+    # ============================================================
+    # Optional: plot marginals (top-M)
+    # ============================================================
+    @staticmethod
+    def _plot_marginals(
+        p: np.ndarray,
+        result_tag: str,
+        out_dir: str = "marginal_plots",
+        top_m: int = 60,
+        save: bool = True,
+        show: bool = False,
+    ) -> str:
+        if plt is None:
+            raise RuntimeError("matplotlib is not available. Install with: pip install matplotlib")
+
+        p = np.asarray(p, dtype=float).reshape(-1)
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+        order = np.argsort(p)[::-1]
+        m = int(min(max(1, top_m), len(p)))
+        idx = order[:m]
+        vals = p[idx]
+
+        plt.figure()
+        plt.bar(np.arange(m), vals)
+        plt.xticks(np.arange(m), [str(int(i)) for i in idx.tolist()], rotation=90)
+        plt.ylabel("p_i = Pr(z_i=1)")
+        plt.title(f"Sample marginals (Top {m})")
+        plt.tight_layout()
+
+        out_path = str(Path(out_dir) / f"{result_tag}_marginals_top{m}.png")
+        if save:
+            plt.savefig(out_path, dpi=200)
+        if show:
+            plt.show()
+        plt.close()
+        return out_path
+
+    # ============================================================
+    # generalized-eigen QSCI weights (overlap-aware)
+    # Solve HR v = λ G v, where G = X X^T (X rows are bitstrings)
+    # ============================================================
+    @staticmethod
+    def _qsci_generalized_weights(
+        HR: np.ndarray,
+        X: np.ndarray,
+        tol: float = 1e-10,
+        reg: float = 1e-12,
+    ) -> np.ndarray:
+        HR = np.asarray(HR, dtype=float)
+        HR = 0.5 * (HR + HR.T)
+
+        X = np.asarray(X, dtype=float)
+        G = X @ X.T
+        G = 0.5 * (G + G.T)
+        G = G + float(reg) * np.eye(G.shape[0])
+
+        gvals, U = np.linalg.eigh(G)
+        keep = gvals > float(tol)
+        if not np.any(keep):
+            raise RuntimeError("QSCI generalized: overlap matrix G is numerically singular (no eigenvalue > tol).")
+
+        g = gvals[keep]
+        Uk = U[:, keep]
+        W = Uk / np.sqrt(g)  # (R, r)
+
+        Ht = W.T @ HR @ W
+        Ht = 0.5 * (Ht + Ht.T)
+
+        evals, evecs = np.linalg.eigh(Ht)
+        y0 = evecs[:, 0]
+        v0 = W @ y0
+
+        w = (v0.real ** 2)
+        sw = float(w.sum())
+        if not np.isfinite(sw) or sw <= 0:
+            raise RuntimeError("QSCI generalized: invalid weights (sum<=0 or non-finite).")
+        w /= sw
+        return w
+
+    # -------------------------
+    # plot QSCI distribution
+    # -------------------------
+    @staticmethod
+    def _plot_qsci_distribution(
+        probs: np.ndarray,
+        SR: list[tuple[int, ...]],
+        result_tag: str,
+        out_dir: str = "qsci_plots",
+        top_m: int = 30,
+        save: bool = True,
+        show: bool = False,
+    ) -> dict[str, str]:
+        if plt is None:
+            raise RuntimeError("matplotlib is not available. Install with: pip install matplotlib")
+
+        probs = np.asarray(probs, dtype=float).reshape(-1)
+        R = len(probs)
+        if R != len(SR):
+            raise ValueError("probs and SR length mismatch")
+
+        outp: dict[str, str] = {}
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+        order = np.argsort(probs)[::-1]
+        m = int(min(max(1, top_m), R))
+        top_idx = order[:m]
+        top_probs = probs[top_idx]
+        top_ks = [int(sum(SR[i])) for i in top_idx]
+
+        labels = [f"SR#{i+1}\n(k={k})" for i, k in zip(top_idx.tolist(), top_ks)]
+
+        plt.figure()
+        plt.bar(np.arange(m), top_probs)
+        plt.xticks(np.arange(m), labels, rotation=90)
+        plt.ylabel("QSCI weight")
+        plt.title(f"QSCI (generalized) distribution over SR (Top {m})")
+        if save:
+            p1 = str(Path(out_dir) / f"{result_tag}_qsci_probs_top{m}.png")
+            plt.tight_layout()
+            plt.savefig(p1, dpi=200)
+            outp["qsci_probs_top"] = p1
+        if show:
+            plt.show()
+        plt.close()
+
+        ks_all = np.array([int(sum(z)) for z in SR], dtype=int)
+        k_vals = np.sort(np.unique(ks_all))
+        mass = np.array([probs[ks_all == kv].sum() for kv in k_vals], dtype=float)
+
+        plt.figure()
+        plt.bar(k_vals, mass)
+        plt.xlabel("k = sum(z) in SR")
+        plt.ylabel("probability mass")
+        plt.title("QSCI probability mass by k (within SR)")
+        if save:
+            p2 = str(Path(out_dir) / f"{result_tag}_qsci_probmass_by_k.png")
+            plt.tight_layout()
+            plt.savefig(p2, dpi=200)
+            outp["qsci_probmass_by_k"] = p2
+        if show:
+            plt.show()
+        plt.close()
+
+        return outp
+
+    # -------------------------
+    # F_tilde frequency helpers
+    # -------------------------
+    @staticmethod
+    def _bucket_float(v: float, decimals: int = 9) -> float:
+        return float(np.round(float(v), decimals=int(decimals)))
+
+    @staticmethod
+    def _plot_ftilde_frequency(
+        ftilde_counter: Counter[float],
+        result_tag: str,
+        out_dir: str = "ftilde_plots",
+        top_m: int = 80,
+        save: bool = True,
+        show: bool = False,
+    ) -> str:
+        if plt is None:
+            raise RuntimeError("matplotlib is not available. Install with: pip install matplotlib")
+
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        if not ftilde_counter:
+            raise ValueError("ftilde_counter is empty")
+
+        items = list(ftilde_counter.items())
+        if top_m is not None and len(items) > int(top_m):
+            items = ftilde_counter.most_common(int(top_m))
+        items = sorted(items, key=lambda kv: kv[0])
+
+        xs = np.array([k for k, _ in items], dtype=float)
+        ys = np.array([v for _, v in items], dtype=float)
+
+        plt.figure()
+        plt.scatter(xs, ys)
+        plt.xlabel("F_tilde(z) (QP minimum, bucketed)")
+        plt.ylabel("occurrences (weighted by num_occurrences)")
+        plt.title("Frequency of QP minima over sampled z")
+        plt.tight_layout()
+
+        out_path = str(Path(out_dir) / f"{result_tag}_ftilde_freq.png")
+        if save:
+            plt.savefig(out_path, dpi=200)
+        if show:
+            plt.show()
+        plt.close()
+        return out_path
+
+    # -------------------------
+    # Robust QP solve (support fixed)
+    # -------------------------
+    @staticmethod
+    def _solve_problem_with_fallback(prob: cp.Problem, verbose: bool = False) -> None:
+        installed = set(cp.installed_solvers())
+        candidates: list[tuple[str, dict[str, Any]]] = [
+            ("OSQP", {"verbose": verbose, "warm_start": True, "max_iter": 200000, "eps_abs": 1e-8, "eps_rel": 1e-8}),
+            ("CLARABEL", {"verbose": verbose}),
+            ("ECOS", {"verbose": verbose}),
+            ("SCS", {"verbose": verbose, "max_iters": 50000}),
+        ]
+        last_err: Optional[Exception] = None
+
+        for name, opts in candidates:
+            if name not in installed:
+                continue
+            try:
+                prob.solve(solver=getattr(cp, name), **opts)
+                return
+            except Exception as e:
+                last_err = e
+
+        try:
+            prob.solve(verbose=verbose)
+            return
+        except Exception as e:
+            last_err = e
+
+        raise cp.SolverError(f"All solvers failed. Last error: {last_err}")
+
+    def solve_qp_with_support(
+        self,
+        z_hat: np.ndarray,
+        verbose: bool = False,
+    ) -> tuple[np.ndarray, float]:
+        z_hat = np.asarray(z_hat, dtype=int).reshape(-1)
+        if z_hat.shape[0] != self.N:
+            raise ValueError("z_hat length mismatch.")
+        if int(np.sum(z_hat)) == 0:
+            raise RuntimeError("Empty support (all zeros z_hat).")
+
+        x = cp.Variable(self.N)
+        Qpsd = cp.psd_wrap(self.Q)
+        obj = cp.Minimize(0.5 * cp.quad_form(x, Qpsd))
+
+        cons = [x >= 0.0, x <= z_hat.astype(float)]
+        if self.sumx_eq:
+            cons.append(cp.sum(x) == 1.0)
+        else:
+            cons.append(cp.sum(x) <= 1.0)
+
+        prob = cp.Problem(obj, cons)
+        self._solve_problem_with_fallback(prob, verbose=verbose)
+
+        if prob.status not in ("optimal", "optimal_inaccurate") or x.value is None:
+            raise RuntimeError(f"QP failed: status={prob.status}")
+
+        x_val = np.asarray(x.value, dtype=float).reshape(-1)
+        return x_val, float(prob.value)
+
+    def _solve_fixed_support_relaxed_value(self, z_hat: np.ndarray, verbose: bool = False) -> float:
+        _, val = self.solve_qp_with_support(z_hat=z_hat, verbose=verbose)
+        return float(val)
+
+    # -------------------------
+    # surrogate H(alpha) on z
+    # -------------------------
+    def _build_effective_hamiltonian(self, alpha: float) -> np.ndarray:
+        a = float(alpha)
+        return 0.5 * (a * a) * self.Q
+
+    # -------------------------
+    # cardinality slack QUBO for sum(z) <= K_card
+    # -------------------------
+    def _build_z_only_qubo_with_slack(self, K_card: int, lam: float = 10.0):
+        N = self.N
+        K_card = int(max(1, K_card))
+        K_eff = int(K_card)
+
+        alpha_ref = 1.0 / float(K_eff)
+        H_unscaled = self._build_effective_hamiltonian(alpha=alpha_ref)
+
+        H_scale = float(np.max(np.abs(H_unscaled)))
+        H_scale_used = H_scale if H_scale > 0 else 1.0
+        H = H_unscaled / H_scale_used
+
+        base = float(np.mean(np.abs(H))) if np.any(H) else 1.0
+        lam_card = float(lam) * base
+
+        self._last_qubo_meta = {
+            "alpha_ref": float(alpha_ref),
+            "K_card": int(K_card),
+            "K_eff": int(K_eff),
+            "H_scale": float(H_scale_used),
+            "base": float(base),
+            "lam_card": float(lam_card),
+        }
+
+        m1 = int(np.ceil(np.log2(K_card + 1))) if K_card > 0 else 1
+        p1 = np.array([2**j for j in range(m1)], dtype=float)
+
+        n_tot = N + m1
+        Q = np.zeros((n_tot, n_tot), dtype=float)
+
+        # FIX: correct mapping for H part
+        H_qubo = self._quadratic_form_to_qubo_upper(H)
+        Q[:N, :N] += H_qubo
+
+        # penalty: (sum(z) + p1^T y - K_card)^2
+        for i in range(N):
+            Q[i, i] += lam_card * (1.0 - 2.0 * K_card)
+        for i in range(N):
+            for j in range(i + 1, N):
+                Q[i, j] += 2.0 * lam_card
+
+        for a in range(m1):
+            ia = N + a
+            Q[ia, ia] += lam_card * (p1[a] ** 2 - 2.0 * K_card * p1[a])
+            for b in range(a + 1, m1):
+                ib = N + b
+                Q[ia, ib] += 2.0 * lam_card * p1[a] * p1[b]
+
+        for i in range(N):
+            for a in range(m1):
+                ia = N + a
+                Q[i, ia] += 2.0 * lam_card * p1[a]
+
+        Q = np.triu(Q)
+        const_scaled = lam_card * (K_card ** 2)
+        return Q, const_scaled, N, m1, K_eff
+
+    @staticmethod
+    def _qubo_matrix_to_dict(Q: np.ndarray, tol: float = 0.0) -> dict[tuple[int, int], float]:
+        Q = np.asarray(Q, dtype=float)
+        n = Q.shape[0]
+        qubo: dict[tuple[int, int], float] = {}
+        for i in range(n):
+            row = Q[i, i:]
+            nz = np.where(np.abs(row) > tol)[0] if tol > 0 else np.where(row != 0.0)[0]
+            for k in nz:
+                j = i + int(k)
+                qubo[(i, j)] = float(row[k])
+        return qubo
+
+    def _save_eps_eta_report(self, rows: list[dict[str, Any]], result_dir: str, result_tag: str) -> tuple[str, str]:
+        out_dir = Path(result_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        def _dedup(p: Path) -> Path:
+            if not p.exists():
+                return p
+            stem, suffix = p.stem, p.suffix
+            i = 1
+            while True:
+                cand = p.with_name(f"{stem}_{i}{suffix}")
+                if not cand.exists():
+                    return cand
+                i += 1
+
+        json_path = _dedup(out_dir / f"{result_tag}_eps_eta.json")
+        csv_path = json_path.with_suffix(".csv")
+
+        payload = {"tag": result_tag, "N": int(self.N), "K": int(self.K), "rows": rows}
+        json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        fieldnames = sorted({k for r in rows for k in r.keys()})
+        if not fieldnames:
+            fieldnames = ["rank", "k", "E", "F_tilde", "eps", "eta"]
+
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            w.writeheader()
+            if rows:
+                w.writerows(rows)
+
+        return str(json_path), str(csv_path)
+
+    # =========================
+    # D-Wave QPU ONLY
+    # =========================
+    def solve_qubo(
+        self,
+        cardinality: Optional[int] = None,
+        R: int = 10,
+        num_reads: int = 2000,
+        n_runs: int = 1,
+        lam: float = 10.0,
+        sampler: Optional[Any] = None,
+        filter_empty: bool = True,
+        save_eps_eta: bool = True,
+        result_dir: str = "eps_eta_reports",
+        result_tag: str = "run",
+        qp_verbose: bool = False,
+
+        # ---- F_tilde(z) frequency plot knobs ----
+        plot_ftilde_freq: bool = True,
+        ftilde_eval_top_z: int = 200,
+        ftilde_bucket_decimals: int = 9,
+        ftilde_plot_top_m: int = 80,
+
+        # ---- normalize BQM to max|bias| ~= target ----
+        bqm_maxabs_target: float = 1.0,
+        auto_scale: bool = False,
+
+        # ---- NEW: marginal knobs ----
+        use_marginal: bool = True,
+        marginal_top_z: Optional[int] = None,     # None => use all sampled bitstrings
+        plot_marginal: bool = True,
+        marginal_plot_top_m: int = 60,
+
+        # ---- NEW: choose final z_hat ----
+        final_pick: str = "best",  # "qsci" | "marginal" | "best"
+    ) -> dict[str, Any]:
+        K_card = int(cardinality) if (cardinality is not None and int(cardinality) > 0) else int(self.K)
+
+        Qmat, const_scaled, N, m_card, K_eff = self._build_z_only_qubo_with_slack(K_card=K_card, lam=lam)
+
+        qubo = self._qubo_matrix_to_dict(Qmat, tol=0.0)
+        bqm = dimod.BQM.from_qubo(qubo)
+        try:
+            bqm.offset += float(const_scaled)
+        except Exception:
+            pass
+
+        # --- force D-Wave QPU sampler ---
+        if sampler is None:
+            if DWaveSampler is None or EmbeddingComposite is None:
+                raise RuntimeError(
+                    "D-Wave sampler is required but not available.\n"
+                    "Install/configure:\n"
+                    "  pip install dwave-system\n"
+                    "  dwave config create"
+                )
+            sampler = EmbeddingComposite(DWaveSampler())
+
+        # normalize/scale BQM so max |bias| ~= target
+        bqm_scale_factor = 1.0
+        bqm_pre_maxabs = 0.0
+        if bqm_maxabs_target is not None and float(bqm_maxabs_target) > 0:
+            bqm, bqm_scale_factor, bqm_pre_maxabs = self._scale_bqm_maxabs(bqm, target=float(bqm_maxabs_target))
+            self._last_qubo_meta["bqm_pre_maxabs"] = float(bqm_pre_maxabs)
+            self._last_qubo_meta["bqm_scale_factor"] = float(bqm_scale_factor)
+            self._last_qubo_meta["bqm_maxabs_target"] = float(bqm_maxabs_target)
+
+        # -------------------------
+        # sample
+        # -------------------------
+        z_counter: Counter[tuple[int, ...]] = Counter()
+        for _ in range(int(n_runs)):
+            sampleset = sampler.sample(bqm, num_reads=int(num_reads), auto_scale=bool(auto_scale))
+            for rec in sampleset.data(fields=["sample", "num_occurrences"]):
+                sample = rec.sample
+                occ = int(getattr(rec, "num_occurrences", 1) or 1)
+                z = tuple(int(sample[i]) for i in range(N))  # ignore slack bits
+                if filter_empty and sum(z) == 0:
+                    continue
+                z_counter[z] += occ
+
+        if not z_counter:
+            raise RuntimeError("No valid z bitstrings from sampler")
+
+        # SR: top-R bitstrings by occurrence
+        SR = [z for z, _ in z_counter.most_common(int(R))]
+        self.z_counter = z_counter
+        self.SR = SR
+
+        meta = self._last_qubo_meta or {}
+        alpha_ref = float(meta.get("alpha_ref", 1.0))
+        H_scale = float(meta.get("H_scale", 1.0))
+        lam_card = float(meta.get("lam_card", 0.0))
+
+        H_unscaled = self._build_effective_hamiltonian(alpha=alpha_ref)
+
+        # -------------------------
+        # eps/eta report on SR
+        # -------------------------
+        eps_eta_rows: Optional[list[dict[str, Any]]] = None
+        eps_eta_json: Optional[str] = None
+        eps_eta_csv: Optional[str] = None
+
+        if save_eps_eta:
+            eps_eta_rows = []
+            for rank, z in enumerate(SR, start=1):
+                z_hat_sr = np.asarray(z, dtype=int)
+                k = int(np.sum(z_hat_sr))
+                zf = z_hat_sr.astype(float).reshape(-1)
+
+                E = float(zf @ H_unscaled @ zf)
+                pen_card_scaled_min = float(lam_card * (max(0, k - K_card) ** 2))
+
+                F_tilde = self._solve_fixed_support_relaxed_value(z_hat_sr, verbose=qp_verbose)
+                eps = float("nan")
+                eta = float(E - F_tilde) if np.isfinite(E) and np.isfinite(F_tilde) else float("nan")
+
+                eps_eta_rows.append(
+                    {
+                        "rank": int(rank),
+                        "k": int(k),
+                        "E": float(E),
+                        "F_tilde": float(F_tilde),
+                        "eps": float(eps),
+                        "eta": float(eta),
+                        "alpha_ref": float(alpha_ref),
+                        "H_scale": float(H_scale),
+                        "pen_card_scaled_min": float(pen_card_scaled_min),
+                        "K_card": int(K_card),
+                        "K_eff": int(K_eff),
+                        "bqm_pre_maxabs": float(bqm_pre_maxabs),
+                        "bqm_scale_factor": float(bqm_scale_factor),
+                        "bqm_maxabs_target": float(bqm_maxabs_target),
+                    }
+                )
+
+            eps_eta_json, eps_eta_csv = self._save_eps_eta_report(
+                rows=eps_eta_rows, result_dir=result_dir, result_tag=result_tag
+            )
+
+        # -------------------------
+        # F_tilde(z) vs frequency
+        # -------------------------
+        ftilde_counter: Counter[float] = Counter()
+        ftilde_plot_path: Optional[str] = None
+        ftilde_eval_used = 0
+        if plot_ftilde_freq:
+            z_list = z_counter.most_common(int(max(1, ftilde_eval_top_z)))
+            for z, occ in z_list:
+                z_hat_sr = np.asarray(z, dtype=int)
+                try:
+                    fval = float(self._solve_fixed_support_relaxed_value(z_hat_sr, verbose=qp_verbose))
+                except Exception:
+                    continue
+                fkey = self._bucket_float(fval, decimals=int(ftilde_bucket_decimals))
+                ftilde_counter[fkey] += int(occ)
+                ftilde_eval_used += 1
+
+            if ftilde_counter:
+                ftilde_plot_path = self._plot_ftilde_frequency(
+                    ftilde_counter=ftilde_counter,
+                    result_tag=result_tag,
+                    out_dir="ftilde_plots",
+                    top_m=int(ftilde_plot_top_m),
+                    save=True,
+                    show=False,
+                )
+
+        # -------------------------
+        # QSCI generalized refine on SR
+        # -------------------------
+        X = np.array(SR, dtype=float)  # (R, N)
+        HR = X @ H_unscaled @ X.T
+        HR = 0.5 * (HR + HR.T)
+
+        probs = self._qsci_generalized_weights(HR=HR, X=X, tol=1e-10, reg=1e-12)
+        z_bar = probs @ X  # this is already a "marginal-like" vector over SR with overlap-aware weights
+
+        plot_paths = self._plot_qsci_distribution(
+            probs=probs,
+            SR=SR,
+            result_tag=result_tag,
+            out_dir="qsci_plots",
+            top_m=min(30, len(SR)),
+            save=True,
+            show=False,
+        )
+
+        # build z_hat from QSCI
+        z_hat_qsci = np.zeros_like(z_bar, dtype=int)
+        K_pick = int(max(1, min(K_eff, len(z_bar))))
+        idx_qsci = np.argsort(z_bar)[-K_pick:]
+        z_hat_qsci[idx_qsci] = 1
+
+        # -------------------------
+        # NEW: sample-marginal p_i = Pr(z_i=1) from all sampled strings
+        # -------------------------
+        p_marginal_sample: Optional[np.ndarray] = None
+        z_hat_marginal: Optional[np.ndarray] = None
+        marginal_plot_path: Optional[str] = None
+        marginal_total_used: Optional[int] = None
+
+        if use_marginal:
+            p_marginal_sample, marginal_total_used = self._compute_sample_marginals(
+                z_counter=z_counter,
+                N=self.N,
+                top_z=marginal_top_z,
+            )
+            self.p_marginal_sample = p_marginal_sample
+
+            z_hat_marginal = np.zeros(self.N, dtype=int)
+            idx_m = np.argsort(p_marginal_sample)[-K_pick:]
+            z_hat_marginal[idx_m] = 1
+
+            if plot_marginal:
+                try:
+                    marginal_plot_path = self._plot_marginals(
+                        p=p_marginal_sample,
+                        result_tag=result_tag,
+                        out_dir="marginal_plots",
+                        top_m=int(marginal_plot_top_m),
+                        save=True,
+                        show=False,
+                    )
+                except Exception:
+                    marginal_plot_path = None
+
+        # -------------------------
+        # Solve QP for candidates and pick final
+        # -------------------------
+        x_qsci, obj_qsci = self.solve_qp_with_support(z_hat=z_hat_qsci, verbose=qp_verbose)
+
+        x_marg, obj_marg = None, None
+        if use_marginal and z_hat_marginal is not None:
+            x_marg, obj_marg = self.solve_qp_with_support(z_hat=z_hat_marginal, verbose=qp_verbose)
+
+        method = str(final_pick).lower().strip()
+        if method not in ("qsci", "marginal", "best"):
+            method = "best"
+
+        if method == "qsci" or (not use_marginal) or (z_hat_marginal is None) or (obj_marg is None):
+            z_hat_final = z_hat_qsci
+            x_final = x_qsci
+            obj_final = float(obj_qsci)
+            picked = "qsci"
+        elif method == "marginal":
+            z_hat_final = z_hat_marginal
+            x_final = np.asarray(x_marg, dtype=float)
+            obj_final = float(obj_marg)
+            picked = "marginal"
+        else:
+            # best-of-both
+            if float(obj_marg) < float(obj_qsci):
+                z_hat_final = z_hat_marginal
+                x_final = np.asarray(x_marg, dtype=float)
+                obj_final = float(obj_marg)
+                picked = "marginal"
+            else:
+                z_hat_final = z_hat_qsci
+                x_final = x_qsci
+                obj_final = float(obj_qsci)
+                picked = "qsci"
+
+        # store
+        self.z_bar = z_bar
+        self.z_hat = z_hat_final
+        self.x = x_final
+        self.objective_value = float(obj_final)
+
+        return {
+            "K_card": int(K_card),
+            "K_eff": int(K_eff),
+
+            "SR_z": SR,
+            "HR": HR,
+            "qubo_const": float(const_scaled),
+            "slack_bits_card": int(m_card),
+
+            # QSCI outputs
+            "qsci_probs": probs,
+            "z_bar_qsci": z_bar,
+            "z_hat_qsci": z_hat_qsci,
+            "x_qsci": x_qsci,
+            "objective_qsci": float(obj_qsci),
+            "qsci_plot_paths": plot_paths,
+
+            # Marginal outputs
+            "use_marginal": bool(use_marginal),
+            "p_marginal_sample": p_marginal_sample,
+            "marginal_total_used": marginal_total_used,
+            "z_hat_marginal": z_hat_marginal,
+            "x_marginal": x_marg,
+            "objective_marginal": (float(obj_marg) if obj_marg is not None else None),
+            "marginal_plot_path": marginal_plot_path,
+
+            # Final pick
+            "final_pick": str(final_pick),
+            "picked_method": picked,
+            "z_hat": z_hat_final,
+            "x": x_final,
+            "objective": float(obj_final),
+
+            # eps/eta
+            "eps_eta_rows": eps_eta_rows,
+            "eps_eta_json": eps_eta_json,
+            "eps_eta_csv": eps_eta_csv,
+
+            # F_tilde frequency
+            "ftilde_plot_path": ftilde_plot_path,
+            "ftilde_bucket_decimals": int(ftilde_bucket_decimals),
+            "ftilde_eval_top_z": int(ftilde_eval_top_z),
+            "ftilde_eval_used": int(ftilde_eval_used),
+            "ftilde_freq_top": ftilde_counter.most_common(20),
+
+            # BQM scaling info
+            "bqm_pre_maxabs": float(bqm_pre_maxabs),
+            "bqm_scale_factor": float(bqm_scale_factor),
+            "bqm_maxabs_target": float(bqm_maxabs_target),
+            "auto_scale": bool(auto_scale),
+        }
+
+
+# ============================================================
+# 3) Convenience: load LP -> solve
+# ============================================================
+
+def solve_qplib_style_lp(
+    lp_path: str,
+    cardinality: Optional[int] = None,
+    R: int = 10,
+    num_reads: int = 2000,
+    n_runs: int = 1,
+    lam: float = 10.0,
+    sampler: Optional[Any] = None,
+    save_eps_eta: bool = True,
+    result_dir: str = "eps_eta_reports",
+    qp_verbose: bool = False,
+
+    # pass-through knobs
+    bqm_maxabs_target: float = 1.0,
+    auto_scale: bool = False,
+
+    # marginal knobs
+    use_marginal: bool = True,
+    marginal_top_z: Optional[int] = None,
+    plot_marginal: bool = True,
+    marginal_plot_top_m: int = 60,
+
+    final_pick: str = "best",
+):
+    Q, K, sumx_eq = read_qplib_style_lp(lp_path)
+    tag = Path(lp_path).stem
+
+    solver = QPLIBStyleMIQPSolver(Q=Q, K=K, sumx_eq=sumx_eq)
+    out = solver.solve_qubo(
+        cardinality=cardinality,
+        R=R,
+        num_reads=num_reads,
+        n_runs=n_runs,
+        lam=lam,
+        sampler=sampler,
+        save_eps_eta=save_eps_eta,
+        result_dir=result_dir,
+        result_tag=tag,
+        qp_verbose=qp_verbose,
+        bqm_maxabs_target=float(bqm_maxabs_target),
+        auto_scale=bool(auto_scale),
+        use_marginal=bool(use_marginal),
+        marginal_top_z=marginal_top_z,
+        plot_marginal=bool(plot_marginal),
+        marginal_plot_top_m=int(marginal_plot_top_m),
+        final_pick=str(final_pick),
+    )
+    return out
+
+
+# ============================================================
+# 4) CLI entrypoint
+# ============================================================
+
+def _extract_N_from_name(p: Path) -> int:
+    m = re.search(r"N(\d+)", p.stem)
+    return int(m.group(1)) if m else -1
+
+
+def _autopick_lp() -> Optional[Path]:
+    cands = sorted(Path(".").glob("QPLIB_style_*.lp"), key=_extract_N_from_name)
+    if cands:
+        return cands[-1]
+    any_lp = list(Path(".").glob("*.lp"))
+    if not any_lp:
+        return None
+    any_lp.sort(key=lambda p: p.stat().st_mtime)
+    return any_lp[-1]
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="Solve LP via D-Wave QPU -> QSCI(generalized) + sample-marginal -> fixed-support QP"
+    )
+
+    parser.add_argument("lp_pos", nargs="?", default=None, help="(positional) Path to LP file.")
+    parser.add_argument("--lp", default=None, help="Path to LP file (optional, overrides positional).")
+
+    parser.add_argument("--K", type=int, default=None, help="Cardinality cap. If omitted, uses K parsed from LP.")
+    parser.add_argument("--R", type=int, default=100, help="How many SR bitstrings to keep (default: 100)")
+    parser.add_argument("--num-reads", type=int, default=3000, help="D-Wave num_reads (default: 3000)")
+    parser.add_argument("--n-runs", type=int, default=1, help="How many sampling runs (default: 1)")
+    parser.add_argument("--lam", type=float, default=10.0, help="Penalty weight scale (default: 10.0)")
+    parser.add_argument("--result-dir", type=str, default="eps_eta_reports", help="Directory to save eps/eta reports")
+    parser.add_argument("--no-eps-eta", action="store_true", help="Disable eps/eta saving (default: enabled)")
+
+    parser.add_argument("--verbose", action="store_true", help="Enable INFO logs")
+    parser.add_argument("--qp-verbose", action="store_true", help="Enable CVXPY solver verbose logs (debug)")
+
+    # BQM normalization knobs
+    parser.add_argument("--bqm-maxabs-target", type=float, default=1.0, help="Scale BQM so max |bias| ~= target (default: 1.0)")
+    parser.add_argument("--auto-scale", action="store_true", help="Let D-Wave auto_scale (default: False if we normalize ourselves)")
+
+    # marginal knobs
+    parser.add_argument("--no-marginal", action="store_true", help="Disable sample-marginal computation")
+    parser.add_argument("--marginal-top-z", type=int, default=None, help="Use only top-occurring Z states to compute marginals (default: all)")
+    parser.add_argument("--no-marginal-plot", action="store_true", help="Disable marginal plot")
+    parser.add_argument("--marginal-plot-top-m", type=int, default=60, help="Plot top-M marginals (default: 60)")
+
+    parser.add_argument("--final-pick", type=str, default="best", help="Final pick: qsci | marginal | best (default: best)")
+
+    # D-Wave parameters
+    parser.add_argument("--annealing-time", type=int, default=20, help="D-Wave annealing_time (microseconds)")
+    parser.add_argument("--chain-strength", type=float, default=None, help="D-Wave chain_strength (default: auto)")
+    parser.add_argument("--num-spin-reversal-transforms", type=int, default=0, help="D-Wave num_spin_reversal_transforms")
+
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=(logging.INFO if args.verbose else logging.WARNING),
+        format="%(levelname)s:%(name)s:%(message)s",
+    )
+
+    # choose lp path
+    if args.lp is not None:
+        lp_path = Path(args.lp)
+    elif args.lp_pos is not None:
+        lp_path = Path(args.lp_pos)
+    else:
+        picked = _autopick_lp()
+        if picked is None:
+            print("[ERROR] No LP file specified and no *.lp found in current directory.", file=sys.stderr)
+            sys.exit(1)
+        lp_path = picked
+        if args.verbose:
+            print(f"[INFO] Auto-selected LP: {lp_path}")
+
+    if not lp_path.exists():
+        print(f"[ERROR] LP file not found: {lp_path}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[INFO] Reading LP: {lp_path.resolve()}")
+
+    # D-Wave sampler setup
+    if DWaveSampler is None or EmbeddingComposite is None:
+        print(
+            "[ERROR] D-Wave is required but not available.\n"
+            "Install and configure:\n"
+            "  pip install dwave-system\n"
+            "  dwave config create",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    qpu = DWaveSampler()
+    sampler_base = EmbeddingComposite(qpu)
+
+    if args.verbose:
+        try:
+            print(f"[INFO] Using D-Wave QPU: {qpu.solver.name}")
+        except Exception:
+            print("[INFO] Using D-Wave QPU")
+
+    class _SamplerWrapper:
+        def __init__(self, base, extra_kwargs: dict[str, Any]):
+            self.base = base
+            self.extra_kwargs = extra_kwargs
+
+        def sample(self, bqm, **kwargs):
+            merged = dict(self.extra_kwargs)
+            merged.update(kwargs)
+            return self.base.sample(bqm, **merged)
+
+    extra_qpu_kwargs: dict[str, Any] = {
+        "annealing_time": int(args.annealing_time),
+    }
+    if args.chain_strength is not None:
+        extra_qpu_kwargs["chain_strength"] = float(args.chain_strength)
+    if int(args.num_spin_reversal_transforms) > 0:
+        extra_qpu_kwargs["num_spin_reversal_transforms"] = int(args.num_spin_reversal_transforms)
+
+    sampler_obj = _SamplerWrapper(sampler_base, extra_qpu_kwargs)
+
+    out = solve_qplib_style_lp(
+        lp_path=str(lp_path),
+        cardinality=args.K,
+        R=int(args.R),
+        num_reads=int(args.num_reads),
+        n_runs=int(args.n_runs),
+        lam=float(args.lam),
+        sampler=sampler_obj,
+        save_eps_eta=(not args.no_eps_eta),
+        result_dir=str(args.result_dir),
+        qp_verbose=bool(args.qp_verbose),
+        bqm_maxabs_target=float(args.bqm_maxabs_target),
+        auto_scale=bool(args.auto_scale),
+        use_marginal=(not args.no_marginal),
+        marginal_top_z=(int(args.marginal_top_z) if args.marginal_top_z is not None else None),
+        plot_marginal=(not args.no_marginal_plot),
+        marginal_plot_top_m=int(args.marginal_plot_top_m),
+        final_pick=str(args.final_pick),
+    )
+
+    z_hat = np.asarray(out["z_hat"], dtype=int)
+    k_hat = int(np.sum(z_hat))
+    obj = float(out["objective"])
+    active = np.where(z_hat > 0)[0].tolist()
+
+    print("=== DONE ===")
+    print(f"LP              : {lp_path}")
+    print(f"K_card          : {out['K_card']}")
+    print(f"K_eff           : {out['K_eff']}")
+    print(f"picked_method   : {out.get('picked_method')}")
+    print(f"k(z_hat)        : {k_hat}")
+    print(f"active indices  : {active[:30]}{' ...' if len(active) > 30 else ''}")
+    print(f"objective       : {obj:.12g}")
+
+    print(f"objective_qsci     : {out.get('objective_qsci')}")
+    print(f"objective_marginal : {out.get('objective_marginal')}")
+
+    print(f"bqm_pre_maxabs  : {out.get('bqm_pre_maxabs')}")
+    print(f"bqm_scale_factor: {out.get('bqm_scale_factor')}")
+    print(f"bqm_target      : {out.get('bqm_maxabs_target')}")
+    print(f"auto_scale      : {out.get('auto_scale')}")
+
+    if out.get("eps_eta_json"):
+        print(f"eps/eta json    : {out['eps_eta_json']}")
+    if out.get("eps_eta_csv"):
+        print(f"eps/eta csv     : {out['eps_eta_csv']}")
+
+    if out.get("qsci_plot_paths"):
+        for k, v in out["qsci_plot_paths"].items():
+            print(f"{k:18s}: {v}")
+
+    if out.get("marginal_plot_path"):
+        print(f"{'marginal_plot':18s}: {out['marginal_plot_path']}")
+
+    if out.get("ftilde_plot_path"):
+        print(f"{'ftilde_freq_plot':18s}: {out['ftilde_plot_path']}")
+        print(f"[INFO] ftilde_eval_used={out.get('ftilde_eval_used')} (requested top_z={out.get('ftilde_eval_top_z')})")
+        top_pairs = out.get("ftilde_freq_top") or []
+        if top_pairs:
+            print("[INFO] top bucketed F_tilde values by frequency (value, count):")
+            for v, c in top_pairs[:10]:
+                print(f"  {v:.10g}\t{c}")
