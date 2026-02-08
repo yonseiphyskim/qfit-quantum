@@ -33,6 +33,60 @@ except Exception:
 
 
 # ============================================================
+# Logging utilities (UPDATED: always file logging)
+# ============================================================
+
+def configure_logging(verbose: bool, log_file: Optional[str] = None, append: bool = False) -> Path:
+    """
+    Configure root logging to console + ALWAYS file.
+
+    - console:
+        verbose=False => WARNING+
+        verbose=True  => INFO+
+    - file:
+        ALWAYS INFO+  (even if verbose=False)
+    """
+    # default log file if user didn't provide one
+    if not log_file or not str(log_file).strip():
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        log_file = str(Path("logs") / f"run_{ts}.log")
+
+    fmt = logging.Formatter(
+        fmt="%(asctime)s %(levelname)s:%(name)s:%(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    root = logging.getLogger()
+
+    # IMPORTANT:
+    # root level must be <= INFO, otherwise INFO records won't be created at all
+    root.setLevel(logging.INFO)
+
+    # clear existing handlers to avoid duplicate logs
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    # console handler (level depends on verbose)
+    console_level = logging.INFO if verbose else logging.WARNING
+    sh = logging.StreamHandler()
+    sh.setLevel(console_level)
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
+
+    # file handler (ALWAYS enabled, always INFO+)
+    p = Path(log_file)
+    if p.parent and str(p.parent) not in ("", "."):
+        p.parent.mkdir(parents=True, exist_ok=True)
+    mode = "a" if append else "w"
+    fh = logging.FileHandler(str(p), mode=mode, encoding="utf-8")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
+    return p
+
+
+# ============================================================
 # Timing utilities
 # ============================================================
 
@@ -256,9 +310,6 @@ class QPLIBStyleMIQPSolver:
         self._last_qubo_meta: dict[str, Any] = {}
         self._qp_calls: int = 0  # total QP solves (for profiling)
 
-    # ------------------------------------------------------------
-    # H(z) quadratic form -> QUBO upper-tri mapping
-    # ------------------------------------------------------------
     @staticmethod
     def _quadratic_form_to_qubo_upper(H: np.ndarray) -> np.ndarray:
         H = np.asarray(H, dtype=float)
@@ -269,9 +320,6 @@ class QPLIBStyleMIQPSolver:
         Q[iu] = 2.0 * H[iu]
         return np.triu(Q)
 
-    # ------------------------------------------------------------
-    # Scale BQM so max |bias| ~= target
-    # ------------------------------------------------------------
     @staticmethod
     def _scale_bqm_maxabs(
         bqm: dimod.BinaryQuadraticModel, target: float = 1.0
@@ -286,13 +334,9 @@ class QPLIBStyleMIQPSolver:
         if not np.isfinite(m) or m <= 0:
             return bqm, 1.0, float(m if np.isfinite(m) else 0.0)
         s = float(target) / float(m)
-        bqm.scale(s)  # scales linear, quadratic, AND offset
+        bqm.scale(s)
         return bqm, s, float(m)
 
-    # ------------------------------------------------------------
-    # compute energy threshold by weighted quantile (by occ)
-    # choose lowest-energy states whose cumulative occ reaches frac
-    # ------------------------------------------------------------
     @staticmethod
     def _energy_filter_states(
         z_occ: Counter[tuple[int, ...]],
@@ -312,7 +356,7 @@ class QPLIBStyleMIQPSolver:
         if not items:
             return []
 
-        items.sort(key=lambda t: t[2])  # by energy asc
+        items.sort(key=lambda t: t[2])
         total = sum(occ for _, occ, _ in items)
         target = frac * total
 
@@ -325,9 +369,6 @@ class QPLIBStyleMIQPSolver:
                 break
         return picked
 
-    # ------------------------------------------------------------
-    # marginal p_i = Pr(z_i=1), occ-weighted, optionally energy-filtered
-    # ------------------------------------------------------------
     @staticmethod
     def _compute_marginals_from_items(
         items: list[tuple[tuple[int, ...], int]],
@@ -346,9 +387,6 @@ class QPLIBStyleMIQPSolver:
         p /= float(total)
         return p, total
 
-    # ------------------------------------------------------------
-    # plot marginals (top-M)
-    # ------------------------------------------------------------
     @staticmethod
     def _plot_marginals(
         p: np.ndarray,
@@ -384,9 +422,6 @@ class QPLIBStyleMIQPSolver:
         plt.close()
         return out_path
 
-    # ------------------------------------------------------------
-    # robust solve fallback
-    # ------------------------------------------------------------
     @staticmethod
     def _solve_problem_with_fallback(prob: cp.Problem, verbose: bool = False) -> None:
         installed = set(cp.installed_solvers())
@@ -412,9 +447,6 @@ class QPLIBStyleMIQPSolver:
             last_err = e
         raise cp.SolverError(f"All solvers failed. Last error: {last_err}")
 
-    # ------------------------------------------------------------
-    # Reduced QP on support S (|S|=K), returns (x_full, objective, lambda)
-    # ------------------------------------------------------------
     def solve_qp_on_support_with_dual(
         self,
         support_idx: np.ndarray,
@@ -435,7 +467,6 @@ class QPLIBStyleMIQPSolver:
         obj = cp.Minimize(0.5 * cp.quad_form(xs, Qpsd))
 
         cons = [xs >= 0.0]
-        sum_con = None
         if self.sumx_eq:
             sum_con = (cp.sum(xs) == 1.0)
         else:
@@ -464,16 +495,10 @@ class QPLIBStyleMIQPSolver:
         x, f, _lam = self.solve_qp_on_support_with_dual(support_idx, verbose=verbose)
         return x, f
 
-    # ------------------------------------------------------------
-    # surrogate H(alpha) on z
-    # ------------------------------------------------------------
     def _build_effective_hamiltonian(self, alpha: float) -> np.ndarray:
         a = float(alpha)
         return 0.5 * (a * a) * self.Q
 
-    # ------------------------------------------------------------
-    # cardinality slack QUBO for sum(z) <= K_card
-    # ------------------------------------------------------------
     def _build_z_only_qubo_with_slack(self, K_card: int, lam: float = 10.0):
         N = self.N
         K_card = int(max(1, K_card))
@@ -546,9 +571,6 @@ class QPLIBStyleMIQPSolver:
     def _support_tuple_from_z(zv: np.ndarray) -> tuple[int, ...]:
         return tuple(np.where(zv > 0)[0].tolist())
 
-    # ------------------------------------------------------------
-    # Local search (1-swap)
-    # ------------------------------------------------------------
     def local_search_swap(
         self,
         z0: np.ndarray,
@@ -656,7 +678,6 @@ class QPLIBStyleMIQPSolver:
             i_out, j_in = best_swap
             z[i_out] = 0
             z[j_in] = 1
-
             stats["accepted"] += 1
 
             if best_x is None:
@@ -675,9 +696,6 @@ class QPLIBStyleMIQPSolver:
 
         return z, x_cur, float(f_cur), trace, stats
 
-    # ------------------------------------------------------------
-    # Repair any z to exactly K ones using marginal p
-    # ------------------------------------------------------------
     @staticmethod
     def _repair_to_k(z: np.ndarray, p: np.ndarray, K: int) -> np.ndarray:
         z = np.asarray(z, dtype=int).reshape(-1).copy()
@@ -703,9 +721,6 @@ class QPLIBStyleMIQPSolver:
             z[idx] = 1
         return z
 
-    # ------------------------------------------------------------
-    # Sample a fresh support from marginal (Gumbel-topK)
-    # ------------------------------------------------------------
     @staticmethod
     def _sample_support_from_marginal(p: np.ndarray, K: int, rng: np.random.Generator, eps: float = 1e-12) -> np.ndarray:
         p = np.asarray(p, dtype=float).reshape(-1)
@@ -715,9 +730,6 @@ class QPLIBStyleMIQPSolver:
         idx = np.argpartition(score, -K)[-K:]
         return np.sort(idx.astype(int))
 
-    # ------------------------------------------------------------
-    # Kick (multi-swap): escape move
-    # ------------------------------------------------------------
     def _kick_multiswap(
         self,
         z_cur: np.ndarray,
@@ -744,13 +756,11 @@ class QPLIBStyleMIQPSolver:
 
         ks = int(max(1, min(kick_size, K - 1)))
 
-        # OUT: small x and/or low p
         score_out = 0.7 * x_cur[on] + 0.3 * p[on]
         out_rank = on[np.argsort(score_out)]
         out_cand = out_rank[: int(min(max(ks, out_pool), out_rank.size))]
         out_pick = rng.choice(out_cand, size=ks, replace=False)
 
-        # IN: reduced-cost proxy + marginal
         grad = self.Q @ x_cur
         rc = grad + float(lam)
         rc_off = rc[off]
@@ -766,22 +776,17 @@ class QPLIBStyleMIQPSolver:
         z_new = self._repair_to_k(z_new, p, K)
         return z_new
 
-    # ------------------------------------------------------------
-    # Iterated Local Search (ILS)
-    # ------------------------------------------------------------
     def iterated_local_search(
         self,
         z_start: np.ndarray,
         p: np.ndarray,
         K: int,
         qp_verbose: bool,
-        # inner LS
         ls_iters: int,
         ls_active_pool: int,
         ls_inactive_pool: int,
         ls_tol_improve: float,
         ls_first_improve: bool,
-        # ILS
         ils_kicks: int = 30,
         ils_kick_size: int = 3,
         ils_patience: int = 8,
@@ -908,9 +913,6 @@ class QPLIBStyleMIQPSolver:
             "trace": trace,
         }
 
-    # ------------------------------------------------------------
-    # Main solve
-    # ------------------------------------------------------------
     def solve(
         self,
         cardinality: Optional[int] = None,
@@ -919,36 +921,24 @@ class QPLIBStyleMIQPSolver:
         lam: float = 10.0,
         sampler: Optional[Any] = None,
         filter_empty: bool = True,
-
-        # scaling
         bqm_maxabs_target: float = 1.0,
         auto_scale: bool = False,
-
-        # marginal
         marginal_best_frac: float = 0.2,
         plot_marginal: bool = True,
         marginal_plot_top_m: int = 60,
-
-        # 1-swap local search
         ls_iters: int = 20,
         ls_active_pool: int = 8,
         ls_inactive_pool: int = 64,
         ls_tol_improve: float = 1e-10,
         ls_first_improve: bool = False,
-
-        # ILS
         ils_kicks: int = 30,
         ils_kick_size: int = 3,
         ils_patience: int = 8,
         ils_restart_prob: float = 0.2,
         ils_mix_beta: float = 0.2,
-
-        # output / debug
         qp_verbose: bool = False,
         result_tag: str = "run",
         seed: int = 0,
-
-        # logging
         log_progress: bool = False,
     ) -> dict[str, Any]:
         timer = StageTimer()
@@ -962,7 +952,6 @@ class QPLIBStyleMIQPSolver:
             bqm = dimod.BQM.from_qubo(qubo)
             bqm.offset += float(const_scaled)
 
-        # --- force D-Wave QPU sampler ---
         if sampler is None:
             if DWaveSampler is None or EmbeddingComposite is None:
                 raise RuntimeError(
@@ -983,13 +972,9 @@ class QPLIBStyleMIQPSolver:
             logger.info("[BQM] pre_maxabs=%.6g scale_factor=%.6g target=%.6g auto_scale=%s",
                         float(bqm_pre_maxabs), float(bqm_scale_factor), float(bqm_maxabs_target), str(bool(auto_scale)))
 
-        # -------------------------
-        # sample
-        # -------------------------
         with time_block(timer, "qpu_sampling", log=log_progress):
             z_counter: Counter[tuple[int, ...]] = Counter()
             z_energy: dict[tuple[int, ...], float] = {}
-
             energies = []
 
             for r in range(int(n_runs)):
@@ -998,7 +983,7 @@ class QPLIBStyleMIQPSolver:
                     sample = rec.sample
                     occ = int(getattr(rec, "num_occurrences", 1) or 1)
                     energy = float(getattr(rec, "energy", np.nan))
-                    z = tuple(int(sample[i]) for i in range(N))  # ignore slack bits
+                    z = tuple(int(sample[i]) for i in range(N))
 
                     if filter_empty and sum(z) == 0:
                         continue
@@ -1025,9 +1010,6 @@ class QPLIBStyleMIQPSolver:
             logger.info("[SAMPLE] energy stats: min=%.6g mean=%.6g max=%.6g (raw samples=%d)",
                         float(np.min(e)), float(np.mean(e)), float(np.max(e)), int(e.size))
 
-        # -------------------------
-        # energy-filtered marginal p_i
-        # -------------------------
         with time_block(timer, "energy_filter", log=log_progress):
             picked_items = self._energy_filter_states(
                 z_occ=z_counter,
@@ -1061,9 +1043,6 @@ class QPLIBStyleMIQPSolver:
             except Exception:
                 marginal_plot_path = None
 
-        # -------------------------
-        # z_init from top-K marginals
-        # -------------------------
         K_pick = int(max(1, min(K_eff, self.N)))
         idx0 = np.argsort(p)[-K_pick:]
         z_init = np.zeros(self.N, dtype=int)
@@ -1080,9 +1059,6 @@ class QPLIBStyleMIQPSolver:
         if log_progress:
             logger.info("[INIT] objective_init=%.12g", float(obj0))
 
-        # -------------------------
-        # 1-swap LS
-        # -------------------------
         cache_obj: dict[tuple[int, ...], float] = {}
 
         with time_block(timer, "local_search", log=log_progress):
@@ -1111,9 +1087,6 @@ class QPLIBStyleMIQPSolver:
                         int(ls_stats["cache_miss"]),
                         int(ls_stats["qp_solves"]))
 
-        # -------------------------
-        # ILS
-        # -------------------------
         with time_block(timer, "ils_total", log=log_progress):
             ils_out = self.iterated_local_search(
                 z_start=z_ls,
@@ -1145,63 +1118,53 @@ class QPLIBStyleMIQPSolver:
 
         total_wall = time.perf_counter() - t_all0
 
-        with time_block(timer, "final_pack", log=False):
-            out = {
-                "K_card": int(K_card),
-                "K_eff": int(K_eff),
-                "K_pick": int(K_pick),
+        out = {
+            "K_card": int(K_card),
+            "K_eff": int(K_eff),
+            "K_pick": int(K_pick),
 
-                # sampling stats
-                "num_unique_z": int(len(z_counter)),
-                "total_occ": int(sum(z_counter.values())),
-                "marginal_best_frac": float(marginal_best_frac),
-                "marginal_total_used": int(total_used),
+            "num_unique_z": int(len(z_counter)),
+            "total_occ": int(sum(z_counter.values())),
+            "marginal_best_frac": float(marginal_best_frac),
+            "marginal_total_used": int(total_used),
 
-                # scaling stats
-                "bqm_pre_maxabs": float(bqm_pre_maxabs),
-                "bqm_scale_factor": float(bqm_scale_factor),
-                "bqm_maxabs_target": float(bqm_maxabs_target),
-                "auto_scale": bool(auto_scale),
+            "bqm_pre_maxabs": float(bqm_pre_maxabs),
+            "bqm_scale_factor": float(bqm_scale_factor),
+            "bqm_maxabs_target": float(bqm_maxabs_target),
+            "auto_scale": bool(auto_scale),
 
-                # marginals
-                "p_marginal": p,
-                "marginal_plot_path": marginal_plot_path,
+            "p_marginal": p,
+            "marginal_plot_path": marginal_plot_path,
 
-                # init solution
-                "z_init": z_init,
-                "active_init": sup0.tolist(),
-                "objective_init": float(obj0),
+            "z_init": z_init,
+            "active_init": sup0.tolist(),
+            "objective_init": float(obj0),
 
-                # LS-only
-                "z_ls": z_ls,
-                "active_ls": np.where(z_ls > 0)[0].tolist(),
-                "objective_ls": float(obj_ls),
-                "ls_trace": ls_trace,
-                "ls_stats": ls_stats,
+            "z_ls": z_ls,
+            "active_ls": np.where(z_ls > 0)[0].tolist(),
+            "objective_ls": float(obj_ls),
+            "ls_trace": ls_trace,
+            "ls_stats": ls_stats,
 
-                # ILS final
-                "z_hat": z_best,
-                "active_final": np.where(z_best > 0)[0].tolist(),
-                "objective": float(obj_best),
-                "x": x_best,
+            "z_hat": z_best,
+            "active_final": np.where(z_best > 0)[0].tolist(),
+            "objective": float(obj_best),
+            "x": x_best,
 
-                # ILS stats
-                "ils_kicks": int(ils_kicks),
-                "ils_kick_size": int(ils_kick_size),
-                "ils_patience": int(ils_patience),
-                "ils_restart_prob": float(ils_restart_prob),
-                "ils_mix_beta": float(ils_mix_beta),
-                "ils_kicks_done": int(ils_out["kicks_done"]),
-                "ils_stop_reason": str(ils_out["stop_reason"]),
-                "ils_trace": ils_out["trace"],
+            "ils_kicks": int(ils_kicks),
+            "ils_kick_size": int(ils_kick_size),
+            "ils_patience": int(ils_patience),
+            "ils_restart_prob": float(ils_restart_prob),
+            "ils_mix_beta": float(ils_mix_beta),
+            "ils_kicks_done": int(ils_out["kicks_done"]),
+            "ils_stop_reason": str(ils_out["stop_reason"]),
+            "ils_trace": ils_out["trace"],
 
-                # timing
-                "timing_total_wall": float(total_wall),
-                "timing_breakdown": timer.as_dict(),
+            "timing_total_wall": float(total_wall),
+            "timing_breakdown": timer.as_dict(),
 
-                # qp calls
-                "qp_solve_calls_total": int(self._qp_calls),
-            }
+            "qp_solve_calls_total": int(self._qp_calls),
+        }
 
         if log_progress:
             logger.info("[DONE] objective_init=%.12g objective_ls=%.12g objective_final=%.12g",
@@ -1248,9 +1211,12 @@ def solve_qplib_style_lp(
     seed: int = 0,
 
     log_progress: bool = False,
+
+    # NEW: allow manual tag (avoid filename parsing)
+    result_tag: Optional[str] = None,
 ):
     Q, K, sumx_eq = read_qplib_style_lp(lp_path)
-    tag = Path(lp_path).stem
+    tag = str(result_tag) if (result_tag is not None and str(result_tag).strip()) else Path(lp_path).stem
 
     solver = QPLIBStyleMIQPSolver(Q=Q, K=K, sumx_eq=sumx_eq)
     out = solver.solve(
@@ -1286,22 +1252,6 @@ def solve_qplib_style_lp(
 # 4) CLI entrypoint
 # ============================================================
 
-def _extract_N_from_name(p: Path) -> int:
-    m = re.search(r"N(\d+)", p.stem)
-    return int(m.group(1)) if m else -1
-
-
-def _autopick_lp() -> Optional[Path]:
-    cands = sorted(Path(".").glob("QPLIB_style_*.lp"), key=_extract_N_from_name)
-    if cands:
-        return cands[-1]
-    any_lp = list(Path(".").glob("*.lp"))
-    if not any_lp:
-        return None
-    any_lp.sort(key=lambda p: p.stat().st_mtime)
-    return any_lp[-1]
-
-
 if __name__ == "__main__":
     import argparse
     import sys
@@ -1310,8 +1260,12 @@ if __name__ == "__main__":
         description="Solve LP via D-Wave QPU -> energy-filtered marginals -> 1-swap LS -> ILS(k-swap kick + 1-swap LS) -> QP"
     )
 
+    # LP path (NEW policy: must be explicitly provided)
     parser.add_argument("lp_pos", nargs="?", default=None, help="(positional) Path to LP file.")
     parser.add_argument("--lp", default=None, help="Path to LP file (optional, overrides positional).")
+
+    # NEW: manual tag to avoid filename parsing
+    parser.add_argument("--tag", default=None, help="Result tag for outputs (plot filename prefix). If omitted, uses LP stem.")
 
     parser.add_argument("--K", type=int, default=None, help="Cardinality cap. If omitted, uses K parsed from LP.")
     parser.add_argument("--num-reads", type=int, default=3000, help="D-Wave num_reads (default: 3000)")
@@ -1320,6 +1274,10 @@ if __name__ == "__main__":
 
     parser.add_argument("--verbose", action="store_true", help="Enable INFO logs")
     parser.add_argument("--qp-verbose", action="store_true", help="Enable CVXPY solver verbose logs (debug)")
+
+    # log file output (still allowed, but now optional override)
+    parser.add_argument("--log-file", default=None, help="Log file path override. If omitted, writes to logs/run_YYYYmmdd_HHMMSS.log")
+    parser.add_argument("--log-append", action="store_true", help="Append to log file instead of overwriting.")
 
     # BQM normalization knobs
     parser.add_argument("--bqm-maxabs-target", type=float, default=1.0, help="Scale BQM so max |bias| ~= target (default: 1.0)")
@@ -1340,7 +1298,7 @@ if __name__ == "__main__":
     # ILS knobs (escape)
     parser.add_argument("--ils-kicks", type=int, default=30, help="Number of kicks (default: 30)")
     parser.add_argument("--ils-kick-size", type=int, default=3, help="How many swaps at once in kick (default: 3)")
-    parser.add_argument("--ils-patience", type=int, default=12, help="Stop after this many non-improving kicks (default: 8)")
+    parser.add_argument("--ils-patience", type=int, default=8, help="Stop after this many non-improving kicks (default: 8)")
     parser.add_argument("--ils-restart-prob", type=float, default=0.2, help="Prob. of marginal-restart when stuck (default: 0.2)")
     parser.add_argument("--ils-mix-beta", type=float, default=0.2, help="Mix weight for marginal in kick scoring (default: 0.2)")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for ILS (default: 0)")
@@ -1352,39 +1310,36 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=(logging.INFO if args.verbose else logging.WARNING),
-        format="%(levelname)s:%(name)s:%(message)s",
-    )
+    # configure logging (console + ALWAYS file)
+    log_path = configure_logging(verbose=bool(args.verbose), log_file=args.log_file, append=bool(args.log_append))
+
+    # helper: print + log to file
+    def tee(msg: str) -> None:
+        print(msg)
+        logger.info(msg)
+
+    tee(f"[INFO] Logging to file: {log_path.resolve()}")
 
     # choose lp path
+    lp_path: Path = Path("QPLIB_style_N300.lp")
     if args.lp is not None:
         lp_path = Path(args.lp)
     elif args.lp_pos is not None:
         lp_path = Path(args.lp_pos)
-    else:
-        picked = _autopick_lp()
-        if picked is None:
-            print("[ERROR] No LP file specified and no *.lp found in current directory.", file=sys.stderr)
-            sys.exit(1)
-        lp_path = picked
-        if args.verbose:
-            print(f"[INFO] Auto-selected LP: {lp_path}")
 
     if not lp_path.exists():
-        print(f"[ERROR] LP file not found: {lp_path}", file=sys.stderr)
+        tee(f"[ERROR] LP file not found: {lp_path}")
         sys.exit(1)
 
-    print(f"[INFO] Reading LP: {lp_path.resolve()}")
+    tee(f"[INFO] Reading LP: {lp_path.resolve()}")
 
     # D-Wave sampler setup
     if DWaveSampler is None or EmbeddingComposite is None:
-        print(
+        tee(
             "[ERROR] D-Wave is required but not available.\n"
             "Install and configure:\n"
             "  pip install dwave-system\n"
-            "  dwave config create",
-            file=sys.stderr,
+            "  dwave config create"
         )
         sys.exit(2)
 
@@ -1393,9 +1348,9 @@ if __name__ == "__main__":
 
     if args.verbose:
         try:
-            print(f"[INFO] Using D-Wave QPU: {qpu.solver.name}")
+            tee(f"[INFO] Using D-Wave QPU: {qpu.solver.name}")
         except Exception:
-            print("[INFO] Using D-Wave QPU")
+            tee("[INFO] Using D-Wave QPU")
 
     class _SamplerWrapper:
         def __init__(self, base, extra_kwargs: dict[str, Any]):
@@ -1441,50 +1396,51 @@ if __name__ == "__main__":
         ils_mix_beta=float(args.ils_mix_beta),
         qp_verbose=bool(args.qp_verbose),
         seed=int(args.seed),
-        log_progress=bool(args.verbose),  # <-- verbose면 단계 로그+타임 로그
+        log_progress=bool(args.verbose),
+        result_tag=args.tag,
     )
 
-    print("=== DONE ===")
-    print(f"LP              : {lp_path}")
-    print(f"K_card          : {out['K_card']}")
-    print(f"K_eff           : {out['K_eff']}")
-    print(f"K_pick          : {out['K_pick']}")
+    # summary (tee => also in log file)
+    tee("=== DONE ===")
+    tee(f"LP              : {lp_path}")
+    tee(f"K_card          : {out['K_card']}")
+    tee(f"K_eff           : {out['K_eff']}")
+    tee(f"K_pick          : {out['K_pick']}")
 
-    print(f"unique_z        : {out['num_unique_z']}")
-    print(f"total_occ       : {out['total_occ']}")
-    print(f"marg_best_frac  : {out['marginal_best_frac']}")
-    print(f"marg_occ_used   : {out['marginal_total_used']}")
+    tee(f"unique_z        : {out['num_unique_z']}")
+    tee(f"total_occ       : {out['total_occ']}")
+    tee(f"marg_best_frac  : {out['marginal_best_frac']}")
+    tee(f"marg_occ_used   : {out['marginal_total_used']}")
 
-    print(f"bqm_pre_maxabs  : {out['bqm_pre_maxabs']}")
-    print(f"bqm_scale_factor: {out['bqm_scale_factor']}")
-    print(f"bqm_target      : {out['bqm_maxabs_target']}")
-    print(f"auto_scale      : {out['auto_scale']}")
+    tee(f"bqm_pre_maxabs  : {out['bqm_pre_maxabs']}")
+    tee(f"bqm_scale_factor: {out['bqm_scale_factor']}")
+    tee(f"bqm_target      : {out['bqm_maxabs_target']}")
+    tee(f"auto_scale      : {out['auto_scale']}")
 
-    print(f"objective_init  : {out['objective_init']:.12g}")
-    print(f"objective_ls    : {out['objective_ls']:.12g}")
-    print(f"objective_final : {out['objective']:.12g}")
+    tee(f"objective_init  : {out['objective_init']:.12g}")
+    tee(f"objective_ls    : {out['objective_ls']:.12g}")
+    tee(f"objective_final : {out['objective']:.12g}")
 
-    print(f"active_init     : {out['active_init'][:30]}{' ...' if len(out['active_init']) > 30 else ''}")
-    print(f"active_ls       : {out['active_ls'][:30]}{' ...' if len(out['active_ls']) > 30 else ''}")
-    print(f"active_final    : {out['active_final'][:30]}{' ...' if len(out['active_final']) > 30 else ''}")
+    tee(f"active_init     : {out['active_init'][:30]}{' ...' if len(out['active_init']) > 30 else ''}")
+    tee(f"active_ls       : {out['active_ls'][:30]}{' ...' if len(out['active_ls']) > 30 else ''}")
+    tee(f"active_final    : {out['active_final'][:30]}{' ...' if len(out['active_final']) > 30 else ''}")
 
     if out.get("marginal_plot_path"):
-        print(f"marginal_plot   : {out['marginal_plot_path']}")
+        tee(f"marginal_plot   : {out['marginal_plot_path']}")
 
     ls_trace = out.get("ls_trace") or []
     if ls_trace:
         last = ls_trace[-1]
-        print(f"ls_steps        : {len(ls_trace)-1}")
+        tee(f"ls_steps        : {len(ls_trace)-1}")
         if "stop" in last:
-            print(f"ls_stop         : {last['stop']}")
+            tee(f"ls_stop         : {last['stop']}")
 
-    print(f"ils_kicks_done  : {out.get('ils_kicks_done')}")
-    print(f"ils_stop        : {out.get('ils_stop_reason')}")
+    tee(f"ils_kicks_done  : {out.get('ils_kicks_done')}")
+    tee(f"ils_stop        : {out.get('ils_stop_reason')}")
 
-    # ---- timing summary always printed ----
-    print(f"qp_calls_total  : {out.get('qp_solve_calls_total')}")
-    print(f"total_wall_s    : {out.get('timing_total_wall'):.3f}")
-    print("timing_breakdown:")
+    tee(f"qp_calls_total  : {out.get('qp_solve_calls_total')}")
+    tee(f"total_wall_s    : {out.get('timing_total_wall'):.3f}")
+    tee("timing_breakdown:")
     timing = out.get("timing_breakdown") or {}
     for k, v in sorted(timing.items(), key=lambda kv: (-kv[1], kv[0])):
-        print(f"  {k:18s}: {v:.3f}s")
+        tee(f"  {k:18s}: {v:.3f}s")
