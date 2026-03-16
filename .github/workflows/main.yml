@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  push:
+    branches:
+    - main
+    - dev
+  pull_request:
+    branches:
+    - main
+    - dev
+
+jobs:
+  test:
+    name: Build & run tests (${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['ubuntu-latest', 'macos-latest']
+        python-version: ['3.9', '3.10']
+    steps:
+      - uses: actions/checkout@v2
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          channels: anaconda,ibmdecisionoptimization
+          auto-activate-base: false
+          python-version: ${{ matrix.python-version }}
+          environment-file: environment.yml
+          activate-environment: qfit
+      - name: Conda info
+        shell: bash -l {0}
+        run: |
+          conda info
+          conda list
+      - name: Run pytest with the Conda environment
+        shell: bash -l -o pipefail {0}
+        run: |
+          pip install .
+          conda install pytest hypothesis[numpy]
+          pytest --durations=40
