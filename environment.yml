@@ -17,3 +17,6 @@ dependencies:
   - cctbx-base
   - rdkit
   - dimod
+  - pip
+  - pip:
+      - dwave-system
