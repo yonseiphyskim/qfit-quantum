@@ -1,4 +1,4 @@
-name: qfit
+name: qfit-quantum
 
 channels:
   - conda-forge
