@@ -35,6 +35,7 @@ def main():
         "molmass",
         "rdkit",
         "dimod",
+        "dwave-system",
     ]
 
     setup(
