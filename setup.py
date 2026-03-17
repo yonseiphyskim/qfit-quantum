@@ -34,6 +34,7 @@ def main():
         "tqdm>=4.0.0",
         "molmass",
         "rdkit",
+        "dimod",
     ]
 
     setup(
