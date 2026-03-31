@@ -16,6 +16,7 @@ dependencies:
   - tqdm
   - cctbx-base
   - rdkit
+  - molmass
   - dimod
   - pip
   - pip:
