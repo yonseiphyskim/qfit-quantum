@@ -363,7 +363,7 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         rho_calc = self.models[self.valid_indices]
         N, _ = rho_calc.shape
 
-        # QUBO 조립 (penalty 포함)
+        # Assemble QUBO with penalty terms
         K = 10
         Delta = 0.1
         lam0, lam1, lam2, lam3 = 100, 100, 100, 100
@@ -422,7 +422,7 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         rho_calc = self.models[self.valid_indices]
         N, _ = rho_calc.shape
 
-        # QUBO 조립 (penalty 포함)
+        # Assemble QUBO with penalty terms
         K = 10
         Delta = 0.1
         lam0, lam1, lam2, lam3 = 100, 100, 100, 100
