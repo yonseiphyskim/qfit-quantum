@@ -28,15 +28,11 @@ __all__ = [
     "get_qp_solver_class",
     "get_qubo_solver_class",
 ]
-
-
 ###############################
 # Define solver "interfaces" / Abstractions
 #   All solvers in this module must subclass either QPSolver or QUBOSolver, and conform to the interface.
 #   The functions in the "Helper Methods" section depend on the subclass membership of these ABCs.
 ###############################
-
-
 class GenericSolver(ABC):
     # Class variables
     driver_pkg_name: str
@@ -48,8 +44,6 @@ class GenericSolver(ABC):
 
     weights: Optional[NDArray[np.float_]] = None
     objective_value: Optional[float] = None
-
-
 class QPSolver(GenericSolver):
     """Finds the combination of conformer-occupancies that minimizes difference density.
 
@@ -89,8 +83,6 @@ class QPSolver(GenericSolver):
 
     @abstractmethod
     def solve_qp(self) -> None: ...
-
-
 class QUBOSolver(GenericSolver):
     """Finds the combination of conformer-occupancies that minimizes difference density.
 
@@ -142,13 +134,9 @@ class QUBOSolver(GenericSolver):
         cardinality: Optional[int] = None,
         exact: bool = False,
     ) -> None: ...
-
-
 ###############################
 # Define solver implementations
 ###############################
-
-
 class CVXPYSolver(QPSolver, QUBOSolver):
     driver_pkg_name = "cvxpy"
     driver = lazy_load_module_if_available(driver_pkg_name)
@@ -157,12 +145,8 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         self.target = target
         self.models = models
         self.in_model = in_model
-
-
         self.quad_obj = None
         self.lin_obj = None
-
-        # ✅ 추가: QUBO 속성 초기화
         self.qubo_obj = None
         self.qubo_const = None
         
@@ -175,7 +159,7 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         self.weights = None
 
     def find_redundant_conformers(self, threshold=1e-6):
-        # 💡 매번 새 solver라도 리스트를 항상 초기화
+
         self.valid_indices = []
         self.redundant_indices = []
 
@@ -219,8 +203,6 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         # -----------------------------
         if tmin is None:
             tmin = 0.2 if threshold is None else threshold
-
-
         # ------------------------------------------------------------
         # Prepare data
         # ------------------------------------------------------------
@@ -229,8 +211,6 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         rho_calc = self.models[self.valid_indices]
         rho_obs = self.target
         N, _ = rho_calc.shape
-
-
         # correlation terms
         G = rho_calc @ rho_calc.T        # G_ij = ⟨ρ_calc_i, ρ_calc_j⟩
         f = rho_obs @ rho_calc.T         # f_i = ⟨ρ_obs, ρ_calc_i⟩
@@ -308,8 +288,6 @@ class CVXPYSolver(QPSolver, QUBOSolver):
 
         Q_total = np.zeros((n_tot, n_tot))
         c_total = np.zeros(n_tot)
-
-
         # indices for each variable block
         idx_x = slice(0, n_x)
         idx_u = slice(n_x, n_x+n_u)
@@ -342,8 +320,6 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         Q_total[start_card:end_card, start_card:end_card] += Q_sum2
         c_total[start_card:end_card] += c_sum2
         
-
-
         # symmetrize
         Q_total = 0.5 * (Q_total + Q_total.T)
         Q_total += np.diag(c_total)
@@ -356,7 +332,6 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         self.qubo_obj = Q_total
         self.qubo_const = const
         
-        print(f"[DEBUG] assemble_qubo: tmin={tmin}")
 
         logger.info(f"Constructed QUBO matrix of size {Q_total.shape}")
         return Q_total, const
@@ -393,7 +368,6 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         Delta = 0.1
         lam0, lam1, lam2, lam3 = 100, 100, 100, 100
         tmin = threshold if threshold else 0.2
-        print(f"[DEBUG] solve_qubo(): assembling QUBO with tmin={tmin:.3f}, threshold={threshold}")
         Q, const = self.compute_qubo_coeffs(
             Delta=Delta,
             lam0=lam0, lam1=lam1, lam2=lam2, lam3=lam3,
@@ -435,12 +409,7 @@ class CVXPYSolver(QPSolver, QUBOSolver):
         self._objective_value = objective_value
         self.construct_weights()
 
-        print("[DEBUG] Q_total stats:", Q.min(), Q.max(), np.mean(Q))
-        print("[DEBUG] const =", const)
-        print("[DEBUG] sample energy =", sampleset.first.energy)
-        print("[DEBUG] scaled objective =", sampleset.first.energy * scale)
-        print("[DEBUG] final objective =", objective_value)
-        print(f"✅ D-Wave hybrid solved QUBO: Objective={objective_value:.4f}")
+        logger.info("D-Wave hybrid solved QUBO: Objective=%.4f", objective_value)
         
     def rscc_solve_qubo(self, threshold=0, cardinality=0):      
         # -----------------------------------------------
@@ -539,13 +508,9 @@ class CVXPYSolver(QPSolver, QUBOSolver):
             self._objective_value /= splits
             self._weights[split::splits] = w.value / splits
         self.construct_weights()
-
-
 ###############################
 # Helper methods
 ###############################
-
-
 def _available_qp_solvers() -> dict[str, type]:
     """List all available QP solver classes in this module."""
     available_solvers = {}
@@ -561,8 +526,6 @@ def _available_qp_solvers() -> dict[str, type]:
                 if obj.driver is not None:
                     available_solvers[name] = obj
     return available_solvers
-
-
 def _available_qubo_solvers() -> dict[str, type]:
     """List all available QUBO solver classes in this module."""
     available_solvers = {}
@@ -578,8 +541,6 @@ def _available_qubo_solvers() -> dict[str, type]:
                 if obj.driver is not None:
                     available_solvers[name] = obj
     return available_solvers
-
-
 available_qp_solvers = _available_qp_solvers()
 available_qubo_solvers = _available_qubo_solvers()
 if not available_qp_solvers:
@@ -600,13 +561,9 @@ if not available_qubo_solvers:
         + "is installed."
     )
     raise ImportError(msg)
-
-
 def get_qp_solver_class(solver_type: str) -> type[QPSolver]:
     """Return the class of the requested solver type, or raise a KeyError."""
     return available_qp_solvers[solver_type]
-
-
 def get_qubo_solver_class(solver_type: str) -> type[QUBOSolver]:
     """Return the class of the requested solver type, or raise a KeyError."""
     return available_qubo_solvers[solver_type]

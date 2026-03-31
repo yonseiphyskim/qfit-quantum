@@ -374,8 +374,7 @@ class _BaseQFit(ABC):
             loop_range = [0.2]
             do_BIC_selection = False
             
-        # ✅ 여기! 조건 다 세팅된 후, 실제 값 확인 로그 삽입
-        logger.info(f"[TRACE] options.bic_threshold={self.options.bic_threshold}, do_BIC_selection={do_BIC_selection}, terminal={terminal}")
+        logger.debug("bic_threshold=%s, do_BIC_selection=%s, terminal=%s", self.options.bic_threshold, do_BIC_selection, terminal)
 
         # Create solver
         logger.info("Solving QUBO for %d target values with %d models",
@@ -389,9 +388,9 @@ class _BaseQFit(ABC):
             # Iteratively test decreasing values of the threshold parameter tdmin (threshold)
             # to determine if the better fit (RSS) justifies the use of a more complex model (k)
             qubo_solutions = []
-            logger.info("🔁 Starting BIC loop over thresholds: %s", loop_range)
+            logger.info("Starting BIC loop over thresholds: %s", loop_range)
             for threshold in loop_range:
-                logger.info(f"▶ Threshold={threshold:.3f} — running QUBO solve")
+                logger.info("Threshold=%.3f — running QUBO solve", threshold)
                 solver.solve_qubo(cardinality=None, threshold=threshold)
                 rss = solver.objective_value * self._voxel_volume
                 n = len(self._target)
@@ -419,7 +418,7 @@ class _BaseQFit(ABC):
 
             # Update occupancies from solver weights
             qubo_solution_lowest_bic = min(qubo_solutions, key=lambda sol: sol.BIC)
-            logger.info(f"✅ Lowest BIC solution: threshold={qubo_solution_lowest_bic.threshold:.3f}, BIC={qubo_solution_lowest_bic.BIC:.4f}")
+            logger.info("Lowest BIC solution: threshold=%.3f, BIC=%.4f", qubo_solution_lowest_bic.threshold, qubo_solution_lowest_bic.BIC)
             self._occupancies = qubo_solution_lowest_bic.weights  # pylint: disable=no-member
             # Return solver's objective value (|ρ_obs - Σ(ω ρ_calc)|)
             return qubo_solution_lowest_bic.objective_value
