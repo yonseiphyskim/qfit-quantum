@@ -199,7 +199,7 @@ class TestQFitLigand(QfitLigandRunner):
     #@pytest.mark.skip(reason="FIXME debug CCTBX failure")
     # def test_qfit_ligand_solver_5o3r(self):
     #     """
-    #     Test the performance of the QP and MIQP solvers (as well as the
+    #     Test the performance of the QP and QUBO solvers (as well as the
     #     underlying density-handling routines) given a pair of known
     #     AMP conformations in 5O3R.
     #     """
@@ -210,7 +210,7 @@ class TestQFitLigand(QfitLigandRunner):
     #         # [0.34, 0.037] which is obviously wrong
     #         "cctbx": [0.266, 0.143],
     #     }
-    #     OCC_MIQP = {
+    #     OCC_QUBO = {
     #         "qfit": [0.221749, 0.2],
     #         "cctbx": [0.213114, 0.2]
     #     }
@@ -236,9 +236,9 @@ class TestQFitLigand(QfitLigandRunner):
     #         min_occ = MIN_OCC_QP["qfit"]#transformer]
     #         assert np.all(qfit_ligand._occupancies >= min_occ), \
     #             f"assertion failed for {transformer}"
-    #         qfit_ligand._solve_miqp(
+    #         qfit_ligand._solve_qubo(
     #             threshold=qfit_ligand.options.threshold,
     #             cardinality=qfit_ligand.options.ligand_cardinality)
     #         np.testing.assert_allclose(qfit_ligand._occupancies,
-    #                                    OCC_MIQP[transformer],
+    #                                    OCC_QUBO[transformer],
     #                                    atol=0.000001)

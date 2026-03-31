@@ -10,7 +10,7 @@ import pytest
 
 from qfit.command_line.common_options import load_and_scale_map
 from qfit.qfit import QFitRotamericResidue, QFitOptions
-from qfit.solvers import available_qp_solvers, available_miqp_solvers
+from qfit.solvers import available_qp_solvers, available_qubo_solvers
 from qfit.structure import Structure
 from qfit.xtal.volume import XMap
 
@@ -54,7 +54,7 @@ class TestQfitResidueSampling(QfitProteinSyntheticDataRunner):
         options.sample_backbone = False
         options.sample_angle = False
         options.qp_solver = next(iter(available_qp_solvers.keys()))
-        options.miqp_solver = next(iter(available_miqp_solvers.keys()))
+        options.qubo_solver = next(iter(available_qubo_solvers.keys()))
         # XXX default values don't work for Phe and Lys tests
         options.dofs_per_iteration = 2
         options.dihedral_stepsize = 10

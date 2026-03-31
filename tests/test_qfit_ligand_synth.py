@@ -86,7 +86,7 @@ class TestQfitLigandSyntheticData(QfitLigandRunner, SyntheticMapRunner):
         Check for distinct multiple conformations of ZXI:N15 in the expected
         intermediate output files.
         """
-        for prefix in ["miqp_solution_", "conformer_"]:
+        for prefix in ["qubo_solution_", "conformer_"]:
             intermediates = []
             for fn in os.listdir("."):
                 if fn.startswith(prefix):
@@ -119,7 +119,7 @@ class TestQfitLigandSyntheticData(QfitLigandRunner, SyntheticMapRunner):
 
     def test_qfit_ligand_solver_zxi(self):
         """
-        Test the behavior of the QP and MIQP solvers in qfit_ligand, using
+        Test the behavior of the QP and QUBO solvers in qfit_ligand, using
         the synthetic ZXI examples.
         """
         d_min = 1.0
@@ -154,13 +154,13 @@ class TestQfitLigandSyntheticData(QfitLigandRunner, SyntheticMapRunner):
             assert (np.all(qfit_ligand._occupancies >= MIN_OCC) and
                     np.all(qfit_ligand._occupancies < 0.5)), \
                 f"assertion failed for transformer {transformer} after QP"
-            qfit_ligand._solve_miqp(
+            qfit_ligand._solve_qubo(
                 threshold=qfit_ligand.options.threshold,
                 cardinality=qfit_ligand.options._ligand_cardinality)
             assert len(qfit_ligand._occupancies) == 2
             assert (np.all(qfit_ligand._occupancies >= MIN_OCC) and
                     np.all(qfit_ligand._occupancies < 0.5)), \
-                f"assertion failed for transformer {transformer} after MIQP"
+                f"assertion failed for transformer {transformer} after QUBO"
 
 
 @pytest.mark.slow

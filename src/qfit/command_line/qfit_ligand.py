@@ -117,7 +117,7 @@ def build_argparser():
         default=5,
         metavar="<int>",
         type=int,
-        help="Cardinality constraint used during intermediate MIQP",
+        help="Cardinality constraint used during intermediate QUBO",
     )
     p.add_argument(
         "-it",
@@ -125,14 +125,14 @@ def build_argparser():
         default=0.01,
         metavar="<float>",
         type=float,
-        help="Threshold constraint during intermediate MIQP",
+        help="Threshold constraint during intermediate QUBO",
     )
     p.add_argument(
         "--threshold-selection",
         dest="bic_threshold",
         action=ToggleActionFlag,
         default=True,
-        help="Use BIC to select the most parsimonious MIQP threshold",
+        help="Use BIC to select the most parsimonious QUBO threshold",
     )
     return p
 

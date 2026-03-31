@@ -1,4 +1,4 @@
-"""Common argparse setup and related CLI utility methods (QUBO edition)"""
+"""Common argparse setup and related CLI utility methods"""
 
 import argparse
 import logging
@@ -10,7 +10,7 @@ from qfit.command_line.custom_argparsers import (
     ValidateMapFileArgument,
     ValidateStructureFileArgument,
 )
-from qfit.solvers import available_qp_solvers, available_qubo_solvers  # ✅ QUBO 솔버 등록
+from qfit.solvers import available_qp_solvers, available_qubo_solvers
 from qfit import MapScaler, XMap
 
 logger = logging.getLogger(__name__)
@@ -22,8 +22,7 @@ def get_base_argparser(description,
                        default_transformer=DEFAULT_TRANSFORMER):
     """
     Define and return the base argparse configuration for QUBO-based qFit runs.
-    This is a lightly modified version of the MIQP parser that replaces
-    MIQP solver selection with QUBO solver selection.
+
     """
     p = argparse.ArgumentParser(
         formatter_class=CustomHelpFormatter, description=description
@@ -246,7 +245,7 @@ def get_base_argparser(description,
     )
 
     # ==============================
-    # Solver options (QUBO replaces MIQP)
+    # Solver options (QUBO)
     # ==============================
     p.add_argument(
         "--qp-solver",
@@ -256,7 +255,7 @@ def get_base_argparser(description,
         help="Select the QP solver",
     )
     p.add_argument(
-        "--qubo-solver",  # ✅ replaced MIQP solver
+        "--qubo-solver",
         dest="qubo_solver",
         choices=available_qubo_solvers.keys(),
         default=next(iter(available_qubo_solvers.keys())),

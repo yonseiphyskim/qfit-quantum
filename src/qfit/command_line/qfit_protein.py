@@ -149,7 +149,7 @@ def build_argparser():
         dest="bic_threshold",
         action=ToggleActionFlag,
         default=True,
-        help="Use BIC to select the most parsimonious MIQP threshold",
+        help="Use BIC to select the most parsimonious QUBO threshold",
     )
     # qFit Segment options
     p.add_argument(
@@ -172,7 +172,7 @@ def build_argparser():
         action=ToggleActionFlag,
         dest="seg_bic_threshold",
         default=True,
-        help="Use BIC to select the most parsimonious MIQP threshold (segment)",
+        help="Use BIC to select the most parsimonious QUBO threshold (segment)",
     )
 
     # EM options

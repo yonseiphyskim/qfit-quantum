@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from qfit.qfit import QFitOptions, QFitSegment
-from qfit.solvers import available_qp_solvers, available_miqp_solvers
+from qfit.solvers import available_qp_solvers, available_qubo_solvers
 from qfit.structure import Structure
 from qfit.xtal.volume import XMap
 from qfit.utils.mock_utils import BaseTestRunner, is_github_pull_request
@@ -137,7 +137,7 @@ class TestQfitProteinSimple(QfitProteinSyntheticDataRunner):
         assert len(list(structure.extract("record", "ATOM").residue_groups)) == 1
         options = QFitOptions()
         options.qp_solver = next(iter(available_qp_solvers.keys()))
-        options.miqp_solver = next(iter(available_miqp_solvers.keys()))
+        options.qubo_solver = next(iter(available_qubo_solvers.keys()))
         qfit = QFitSegment(structure, xmap, options)
         multiconf = qfit()
 
@@ -212,7 +212,7 @@ class TestQfitProteinSyntheticData(QfitProteinSyntheticDataRunner):
     def _check_intermediate_ser_conformers(self):
         """Exercise for --write_intermediate_conformers"""
         intermediates = []
-        for prefix in ["miqp_solution_"]:
+        for prefix in ["qubo_solution_"]:
             for fn in os.listdir("A_2"):
                 if fn.startswith(prefix):
                     intermediates.append(Structure.fromfile(f"A_2/{fn}"))
