@@ -80,31 +80,33 @@ If you prefer to manage environments manually, qFit-Quantum requires:
 
 ## Usage
 
-### X-ray crystallography
+### Ligand modeling (X-ray)
+
+To model alternate conformations of ligands, first generate a composite omit map excluding bulk solvent:
 
 ```bash
-qfit_protein [COMPOSITE_OMIT_MAP_FILE] -l [LABELS] [PDB_FILE] -p [# OF THREADS]
+phenix.composite_omit_map input.mtz model.pdb omit-type=refine exclude_bulk_solvent=True
 ```
 
-To remove single-conformer model bias, generate a composite omit map using [Phenix](https://www.phenix-online.org/):
+Then run qFit-ligand:
 
 ```bash
-phenix.composite_omit_map input.mtz model.pdb omit-type=refine
+qfit_ligand [COMPOSITE_OMIT_MAP_FILE] [PDB_FILE] -l [LABELS] [SELECTION] -sm [SMILES]
 ```
 
-Example (PDB: 1G8A):
+Example (PDB: 4MS6):
 
 ```bash
-qfit_protein example/qfit_protein_example/composite_omit_map.mtz \
-  -l 2FOFCWT,PH2FOFCWT \
-  example/qfit_protein_example/1G8A_refined.pdb
+qfit_ligand example/qfit_ligand_example/4ms6_composit_map.mtz \
+  example/qfit_ligand_example/4ms6.pdb \
+  -l 2FOFCWT,PH2FOFCWT A,702 \
+  -sm 'C1C[C@H](NC1)C(=O)CCC(=O)N2CCC[C@H]2C(=O)O' -nc 10000
 ```
 
-After `multiconformer_model2.pdb` is generated, refine with Phenix (v1.21):
+The results are output to `multiconformer_ligand_bound_with_protein.pdb` (protein-ligand complex) and `multiconformer_ligand_only.pdb` (ligand alone). After running, perform a final refinement:
 
 ```bash
-qfit_final_refine_xray.sh example/qfit_protein_example/1G8A.mtz \
-  example/qfit_protein_example/multiconformer_model2.pdb
+qfit_final_refine_ligand.sh 4ms6.mtz
 ```
 
 ### Cryo-EM
@@ -121,21 +123,12 @@ qfit_protein example/qfit_cryoem_example/7A4M_box.ccp4 \
   example/qfit_cryoem_example/7A4M_box.pdb -em
 ```
 
-### Ligand modeling
+After `multiconformer_model2.pdb` is generated, refine with:
 
 ```bash
-phenix.composite_omit_map input.mtz model.pdb omit-type=refine exclude_bulk_solvent=True
-
-qfit_ligand [COMPOSITE_OMIT_MAP_FILE] [PDB_FILE] -l [LABELS] [SELECTION] -sm [SMILES]
-```
-
-Example (PDB: 4MS6):
-
-```bash
-qfit_ligand example/qfit_ligand_example/4ms6_composit_map.mtz \
-  example/qfit_ligand_example/4ms6.pdb \
-  -l 2FOFCWT,PH2FOFCWT A,702 \
-  -sm 'C1C[C@H](NC1)C(=O)CCC(=O)N2CCC[C@H]2C(=O)O' -nc 10000
+qfit_final_refine_cryoEM.sh example/qfit_cryoem_example/7A4M_box.ccp4 \
+  example/qfit_cryoem_example/multiconformer_model2.pdb \
+  example/qfit_cryoem_example/7A4M_box.pdb
 ```
 
 More options and examples are in the [example](example/README.md) directory.
