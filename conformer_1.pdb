@@ -1,0 +1,44 @@
+CRYST1   76.766   87.483   98.964  90.00  90.00  90.00 P 21 21 21
+SCALE1      0.013027  0.000000  0.000000        0.00000
+SCALE2      0.000000  0.011431  0.000000        0.00000
+SCALE3      0.000000  0.000000  0.010105        0.00000
+LINK         ZN   ZN A 701                 O  A28T A 702     1555   1555  1.84
+LINK         ZN   ZN A 701                 O   HOH A 961     1555   1555  1.85
+LINK         OE1 GLU A 318                 ZN   ZN A 701     1555   1555  1.99
+LINK         NE2 HIS A 299                 ZN   ZN A 701     1555   1555  2.06
+LINK         NE2 HIS A 295                 ZN   ZN A 701     1555   1555  2.09
+LINK         YB   YB A 704                 O   ACY A 709     1555   1555  2.19
+LINK         OD2 ASP A 481                 YB   YB A 704     1555   1555  2.21
+LINK         YB   YB A 706                 O   HOH A1221     1555   1555  2.30
+LINK         OD1 ASP A 481                 YB   YB A 704     1555   1555  2.34
+LINK         YB   YB A 704                 O   HOH A 861     1555   1555  2.45
+LINK         OE2 GLU A  70                 YB   YB A 706     1555   1555  2.50
+LINK         YB   YB A 704                 O   HOH A 896     1555   1555  2.52
+LINK         OD2 ASP A  47                 YB   YB A 703     1555   1555  2.55
+LINK         YB   YB A 707                 O   HOH A1273     1555   1555  2.57
+LINK         YB   YB A 705                 O   HOH A1130     1555   1555  2.64
+LINK         OE1 GLU A  70                 YB   YB A 706     1555   1555  2.66
+LINK         OD1 ASP A  47                 YB   YB A 703     1555   1555  2.69
+LINK         YB   YB A 703                 OXT ACY A 708     1555   1555  2.71
+LINK         YB   YB A 705                 O   HOH A 981     1555   1555  2.82
+LINK         YB   YB A 703                 O   ACY A 708     1555   1555  2.84
+HETATM 4992  N   28T A 702      34.272   1.459   1.749  0.30 15.15           N
+HETATM 4993  CA  28T A 702      34.619   2.615   0.917  0.30 15.38           C
+HETATM 4994  C   28T A 702      34.872   3.710   1.934  0.30 13.66           C
+HETATM 4995  O   28T A 702      34.566   3.551   3.109  0.30 13.75           O
+HETATM 4996  CB  28T A 702      33.351   2.916   0.088  0.30 14.93           C
+HETATM 4997  CG  28T A 702      32.657   1.638  -0.059  0.30 15.27           C
+HETATM 4998  CD  28T A 702      33.246   0.710   0.992  0.30 15.60           C
+HETATM 4999  CAF 28T A 702      31.531   9.207   1.712  0.30 15.10           C
+HETATM 5000  CAH 28T A 702      35.564   5.011   1.450  0.30 13.69           C
+HETATM 5001  CAI 28T A 702      34.866   6.266   1.886  0.30 13.89           C
+HETATM 5002  CAK 28T A 702      31.854   9.604   0.292  0.30 15.14           C
+HETATM 5003  CAL 28T A 702      32.790   8.488   2.225  0.30 14.84           C
+HETATM 5004  CAN 28T A 702      34.087   9.720  -0.672  0.30 15.05           C
+HETATM 5005  CAP 28T A 702      34.383   7.066   0.717  0.30 14.24           C
+HETATM 5006  CAR 28T A 702      33.088   8.797  -0.180  0.30 14.50           C
+HETATM 5007  NAS 28T A 702      33.509   8.016   1.039  0.30 14.88           N
+HETATM 5008  OAA 28T A 702      34.786  10.349   0.169  0.30 13.42           O
+HETATM 5009  OAC 28T A 702      34.741   6.932  -0.477  0.30 12.95           O
+HETATM 5010  OAD 28T A 702      34.169   9.891  -1.949  0.30 12.00           O
+END

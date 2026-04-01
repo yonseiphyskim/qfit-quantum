@@ -1,0 +1,25 @@
+Metadata-Version: 2.4
+Name: qfit
+Version: 0.0.0
+Author: Stephanie A. Wankowicz, Blake Riley, Jessica Flowers, Gydo C.P. van Zundert, Saulo H.P. de Oliveira, and Henry van den Bedem
+Author-email: stephanie@wankowiczlab.com
+Project-URL: Documentation, https://github.com/ExcitedStates/qfit-3.0/
+Requires-Python: >=3.9
+License-File: LICENSE
+Requires-Dist: numpy<2,>=1.20
+Requires-Dist: scipy>=1.0
+Requires-Dist: cvxpy
+Requires-Dist: pyscipopt>=5.1.1
+Requires-Dist: pandas>=1.2
+Requires-Dist: pyparsing>=2.2.0
+Requires-Dist: tqdm>=4.0.0
+Requires-Dist: molmass
+Requires-Dist: rdkit
+Requires-Dist: dimod
+Requires-Dist: dwave-system
+Dynamic: author
+Dynamic: author-email
+Dynamic: license-file
+Dynamic: project-url
+Dynamic: requires-dist
+Dynamic: requires-python

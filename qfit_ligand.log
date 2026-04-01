@@ -1,0 +1,125 @@
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : ===== qFit version: 0.0.0 =====
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : Wed Apr  1 15:28:03 2026 KST
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : /home/haeseong/miniconda3/envs/qfit-quantum/bin/qfit_ligand example/qfit_ligand_example/4ms6_composit_map.mtz example/qfit_ligand_example/4ms6.pdb -l 2FOFCWT,PH2FOFCWT A,702 -sm C1C[C@H](NC1)C(=O)CCC(=O)N2CCC[C@H]2C(=O)O -nc 10000
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : ===== qFit parameters: =====
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : directory: /home/haeseong/qfit-quantum
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : verbose: False
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : debug: False
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : write_intermediate_conformers: False
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : label: 2FOFCWT,PH2FOFCWT
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : qscore: None
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : map: example/qfit_ligand_example/4ms6_composit_map.mtz
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : residue: None
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : structure: example/qfit_ligand_example/4ms6.pdb
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : em: False
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : cryo_em_ligand: False
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : scale_info: None
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : cryst_info: None
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : transformer: qfit
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : transformer_map_coeffs: None
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : expand_to_p1: None
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : density_cutoff: 0.3
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : density_cutoff_value: -1
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : subtract: True
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : padding: 8.0
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : waters_clash: True
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : map_type: None
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : resolution: None
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : resolution_min: None
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : scattering: xray
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : omit: False
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : scale: True
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : scale_rmask: 1.0
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : bulk_solvent_level: 0.3
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : clash_scaling_factor: 0.75
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : external_clash: True
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : dofs_per_iteration: 1
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : dihedral_stepsize: 6
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : hydro: False
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : rmsd_cutoff: 0.01
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : qp_solver: CVXPYSolver
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : qubo_solver: CVXPYSolver
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : cardinality: 5
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : _ligand_cardinality: 3
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : threshold: 0.2
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : bic_threshold: True
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : seg_bic_threshold: True
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : sample_backbone: True
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : neighbor_residues_required: 3
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : sample_backbone_amplitude: 0.3
+2026-04-01 15:28:03,829 [INFO    ] MainProcess qfit.command_line.qfit_ligand : sample_backbone_step: 0.1
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : sample_backbone_sigma: 0.125
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : sample_bfactors: True
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : sample_angle: True
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : sample_angle_range: 7.5
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : sample_angle_step: 3.75
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : sample_rotamers: True
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : rotamer_neighborhood: 24
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : remove_conformers_below_cutoff: False
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : exclude_atoms: None
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : selection: A,702
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : cif_file: None
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : numConf: 10000
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : smiles: C1C[C@H](NC1)C(=O)CCC(=O)N2CCC[C@H]2C(=O)O
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : ligand_bic: False
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : ligand_rmsd: True
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : rot_range: 15.0
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : trans_range: 0.3
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : rotation_step: 5.0
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : flip_180: False
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : fragment_length: None
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : only_segment: False
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : nproc: 1
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : pdb: None
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : numpy float resolution: 1.0e-15
+2026-04-01 15:28:03,830 [INFO    ] MainProcess qfit.command_line.qfit_ligand : ============================
+
+2026-04-01 15:28:03,866 [INFO    ] MainProcess qfit.command_line.qfit_ligand : Ligand atoms selected: 19
+2026-04-01 15:28:04,750 [INFO    ] MainProcess qfit.xtal.volume : Expanding map with shape (228, 202, 176) to (228, 202, 176)
+2026-04-01 15:28:05,077 [INFO    ] MainProcess qfit.command_line.common_options : Scaling with resolution=1.720 radius=1.073
+2026-04-01 15:28:05,077 [INFO    ] MainProcess qfit.xtal.scaler : HKLs available, will perform full FFT
+2026-04-01 15:28:19,479 [INFO    ] MainProcess qfit.xtal.scaler : Masking with radius 1.073336
+2026-04-01 15:28:19,499 [INFO    ] MainProcess qfit.xtal.scaler : Masked 1182704 grid points out of 8105856
+2026-04-01 15:28:20,340 [INFO    ] MainProcess qfit.xtal.scaler : L2 scaling: S = 0.28	k = 0.48
+2026-04-01 15:28:25,567 [INFO    ] MainProcess qfit.qfit : Starting RDKit conformer generation
+2026-04-01 15:28:25,570 [INFO    ] MainProcess qfit.qfit : Generating 2500 conformers with no constraints
+2026-04-01 15:29:21,048 [INFO    ] MainProcess qfit.qfit : Minimizing energy of each conformer with no constraints
+2026-04-01 15:30:14,904 [INFO    ] MainProcess qfit.qfit : Aligning molecules with no constraints
+2026-04-01 15:30:59,377 [INFO    ] MainProcess qfit.qfit : Checking for clashes with no constraints
+2026-04-01 15:31:00,395 [INFO    ] MainProcess qfit.qfit : After unconstrained search, there are 467 plausible conformers
+2026-04-01 15:31:00,398 [INFO    ] MainProcess qfit.qfit : Generating 2500 conformers with terminal atom constraints
+2026-04-01 15:31:59,217 [INFO    ] MainProcess qfit.qfit : Minimizing energy of each conformer with terminal atom constraints
+2026-04-01 15:32:54,231 [INFO    ] MainProcess qfit.qfit : Aligning molecules with terminal atom constraints
+2026-04-01 15:33:40,666 [INFO    ] MainProcess qfit.qfit : Checking for clashes with terminal atom constraints
+2026-04-01 15:33:41,658 [INFO    ] MainProcess qfit.qfit : After terminal atom search, there are 629 plausible conformers
+2026-04-01 15:33:41,674 [INFO    ] MainProcess qfit.qfit : Generating 2500 conformers with spherical constraints
+2026-04-01 15:34:38,299 [INFO    ] MainProcess qfit.qfit : Minimizing energy of each conformer with spherical constraints
+2026-04-01 15:35:36,380 [INFO    ] MainProcess qfit.qfit : Aligning molecules with spherical constraints
+2026-04-01 15:36:21,988 [INFO    ] MainProcess qfit.qfit : Checking for clashes with spherical constraints
+2026-04-01 15:36:22,983 [INFO    ] MainProcess qfit.qfit : After spherical search, there are 1131 plausible conformers
+2026-04-01 15:36:22,986 [INFO    ] MainProcess qfit.qfit : Generating 2500 conformers with branched sampling
+2026-04-01 15:37:49,141 [INFO    ] MainProcess qfit.qfit : Minimizing energy of new conformers with branched sampling
+2026-04-01 15:38:45,113 [INFO    ] MainProcess qfit.qfit : Aligning molecules for branched ligand sampling
+2026-04-01 15:39:30,129 [INFO    ] MainProcess qfit.qfit : Checking for clashes with branched sampling
+2026-04-01 15:39:31,173 [INFO    ] MainProcess qfit.qfit : After branched search, there are 773 plausible conformers
+2026-04-01 15:39:31,175 [INFO    ] MainProcess qfit.qfit : Number of generated conformers, before scoring: 1904
+2026-04-01 15:39:32,109 [INFO    ] MainProcess qfit.qfit : Reduced number of conformers from 1904 to 328 after pruning duplicates.
+2026-04-01 15:39:32,109 [INFO    ] MainProcess qfit.qfit : Converting conformers to density
+2026-04-01 15:39:32,494 [INFO    ] MainProcess qfit.qfit : Solving QP within run.
+2026-04-01 15:39:32,494 [INFO    ] MainProcess qfit.qfit : Solving QP for 9484 target values with 328 models
+2026-04-01 15:39:33,199 [INFO    ] MainProcess qfit.qfit : Trans/rot  search generated: 100 plausible conformers
+2026-04-01 15:39:33,199 [INFO    ] MainProcess qfit.qfit : bfactor shape = (100, 19)
+2026-04-01 15:39:33,199 [INFO    ] MainProcess qfit.qfit : Converting conformers to density
+2026-04-01 15:39:33,314 [INFO    ] MainProcess qfit.qfit : Solving QP after trans and rot search.
+2026-04-01 15:39:33,314 [INFO    ] MainProcess qfit.qfit : Solving QP for 3060 target values with 100 models
+2026-04-01 15:39:33,327 [INFO    ] MainProcess qfit.qfit : After rotation and translation QP there are 5 conformers
+2026-04-01 15:39:33,327 [INFO    ] MainProcess qfit.qfit : Solving QUBO within run.
+2026-04-01 15:39:33,327 [INFO    ] MainProcess qfit.qfit : Converting conformers to density
+2026-04-01 15:39:33,337 [INFO    ] MainProcess qfit.qfit : Solving QUBO for 1705 target values with 5 models
+2026-04-01 15:39:33,338 [INFO    ] MainProcess qfit.solvers : Constructed QUBO matrix of size (175, 175)
+2026-04-01 15:39:33,339 [INFO    ] MainProcess qfit.solvers : Constructed QUBO matrix of size (175, 175)
+2026-04-01 15:39:42,927 [INFO    ] MainProcess qfit.solvers : D-Wave hybrid solved QUBO: Objective=125.7203
+2026-04-01 15:39:42,928 [INFO    ] MainProcess qfit.qfit : Final RMSD between conformers 0 and 1: 0.2049495845372177
+2026-04-01 15:39:42,929 [INFO    ] MainProcess qfit.qfit : Final RMSD between conformers 0 and 2: 0.9907351840955224
+2026-04-01 15:39:42,929 [INFO    ] MainProcess qfit.qfit : Final RMSD between conformers 1 and 2: 0.9135479364113596
+2026-04-01 15:39:42,938 [INFO    ] MainProcess qfit.command_line.qfit_ligand : Total time: 677.3749322891235s
