@@ -4,3 +4,10 @@ __pycache__/
 
 build/
 *.egg-info/
+*.pdb#
+.~lock.*
+qfit_ligand.log
+scaled.ccp4
+conformer_*.pdb
+multiconformer_*.pdb
+ligand.pdb
