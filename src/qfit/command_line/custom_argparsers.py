@@ -98,7 +98,7 @@ class ValidateStructureFileArgument(argparse.Action):
 
     def __call__(self, parser, namespace, value, option_string=None):
         fname = Path(value)
-        fname2 = Path(re.sub("\.gz$", "", value))
+        fname2 = Path(re.sub(r"\.gz$", "", value))
         msg = ""
 
         if (

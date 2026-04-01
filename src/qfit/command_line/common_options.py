@@ -259,7 +259,7 @@ def get_base_argparser(description,
         dest="qubo_solver",
         choices=available_qubo_solvers.keys(),
         default=next(iter(available_qubo_solvers.keys())),
-        help="Select the QUBO solver (e.g., dwave-hybrid, simulated-annealing)",
+        help="Select the QUBO solver",
     )
     p.add_argument(
         "-p",

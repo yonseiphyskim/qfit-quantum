@@ -27,7 +27,7 @@ def test_get_qp_solver() -> None:
 
 
 def test_get_qubo_solver() -> None:
-    qubo_solver_class = get_qp_solver_class(next(iter(available_qubo_solvers.keys())))
+    qubo_solver_class = get_qubo_solver_class(next(iter(available_qubo_solvers.keys())))
     assert inspect.isclass(qubo_solver_class)
     assert issubclass(qubo_solver_class, qfit.solvers.QUBOSolver)
 
