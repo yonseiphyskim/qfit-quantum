@@ -11,3 +11,4 @@ scaled.ccp4
 conformer_*.pdb
 multiconformer_*.pdb
 ligand.pdb
+qfit.log
