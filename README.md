@@ -21,6 +21,8 @@ qFit-Quantum replaces the MIQP stage with a **QP → QUBO** pipeline:
 
 Key code changes are localized to `src/qfit/solvers.py` (QUBO coefficient assembly and D-Wave integration), `src/qfit/qfit.py` (solver dispatch), and CLI options (`--qubo-solver` replaces `--miqp-solver`).
 
+> **Note:** This repository focuses on **ligand** multiconformer modeling (X-ray and cryo-EM). Full protein modeling with `qfit_protein` is supported in the codebase but is not demonstrated here, as it invokes the D-Wave QUBO solver per residue and consumes significant solver time. For protein-level examples, refer to the original [qFit-3.0 repository](https://github.com/ExcitedStates/qfit-3.0).
+
 
 ## Citation
 
@@ -103,32 +105,29 @@ qfit_ligand example/qfit_ligand_example/4ms6_composit_map.mtz \
   -sm 'C1C[C@H](NC1)C(=O)CCC(=O)N2CCC[C@H]2C(=O)O' -nc 10000
 ```
 
-The results are output to `multiconformer_ligand_bound_with_protein.pdb` (protein-ligand complex) and `multiconformer_ligand_only.pdb` (ligand alone). After running, perform a final refinement:
+### Ligand modeling (cryo-EM)
+
+For cryo-EM maps, use the `-em_lig` flag to reduce the risk of overfitting. The resolution must also be provided:
 
 ```bash
-qfit_final_refine_ligand.sh 4ms6.mtz
+qfit_ligand [MAP_FILE] [PDB_FILE] -r [RESOLUTION] [SELECTION] -sm [SMILES] -em_lig
 ```
 
-### Cryo-EM
+Example (PDB: 8P70, map: EMD-17513):
 
 ```bash
-qfit_protein [MAP_FILE] -r [RES] [PDB_FILE] -em
+qfit_ligand EMD-17513.map \
+  example/qfit_cryoem_example/8P70.pdb \
+  -r 2.0 A,201 \
+  -sm 'O=C1CCCN1NC2=NC=NC=C2C3=C(F)C=CC=N3' -em_lig
 ```
 
-Example (PDB: 7A4M):
+The cryo-EM map can be downloaded from [EMDB (EMD-17513)](https://www.ebi.ac.uk/emdb/EMD-17513).
+
+After running, perform a final refinement:
 
 ```bash
-qfit_protein example/qfit_cryoem_example/7A4M_box.ccp4 \
-  -r 1.7 \
-  example/qfit_cryoem_example/7A4M_box.pdb -em
-```
-
-After `multiconformer_model2.pdb` is generated, refine with:
-
-```bash
-qfit_final_refine_cryoEM.sh example/qfit_cryoem_example/7A4M_box.ccp4 \
-  example/qfit_cryoem_example/multiconformer_model2.pdb \
-  example/qfit_cryoem_example/7A4M_box.pdb
+qfit_final_refine_cryoem_ligand.sh EMD-17513.map 2.0
 ```
 
 More options and examples are in the [example](example/README.md) directory.
