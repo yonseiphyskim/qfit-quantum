@@ -1,0 +1,178 @@
+2026-04-30 15:38:20,926 [INFO    ] MainProcess qfit.command_line.qfit_protein : ===== qFit version: 0.0.0 =====
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : Thu Apr 30 15:38:20 2026 KST
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : /home/haeseong/miniconda3/envs/qfit-quantum/bin/qfit_protein example/qfit_cryoem_example/7A4M_box.ccp4 -r 1.7 example/qfit_cryoem_example/7A4M_box.pdb -em
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : ===== qFit parameters: =====
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : directory: /home/haeseong/qfit-quantum
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : verbose: False
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : debug: False
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : write_intermediate_conformers: False
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : label: 2FOFCWT,PH2FOFCWT
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : qscore: None
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : map: example/qfit_cryoem_example/7A4M_box.ccp4
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : residue: None
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : structure: example/qfit_cryoem_example/7A4M_box.pdb
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : em: True
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : cryo_em_ligand: False
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : scale_info: None
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : cryst_info: None
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : transformer: qfit
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : transformer_map_coeffs: None
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : expand_to_p1: None
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : density_cutoff: 0.3
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : density_cutoff_value: -1
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : subtract: True
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : padding: 8.0
+2026-04-30 15:38:20,927 [INFO    ] MainProcess qfit.command_line.qfit_protein : waters_clash: True
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : map_type: None
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : resolution: 1.7
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : resolution_min: None
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : scattering: xray
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : omit: False
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : scale: True
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : scale_rmask: 1.0
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : bulk_solvent_level: 0.3
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : clash_scaling_factor: 0.75
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : external_clash: False
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : dofs_per_iteration: 1
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : dihedral_stepsize: 6
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : hydro: False
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : rmsd_cutoff: 0.01
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : qp_solver: CVXPYSolver
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : qubo_solver: CVXPYSolver
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : cardinality: 5
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : _ligand_cardinality: 3
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : threshold: 0.2
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : bic_threshold: True
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : seg_bic_threshold: True
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : sample_backbone: True
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : neighbor_residues_required: 3
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : sample_backbone_amplitude: 0.3
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : sample_backbone_step: 0.1
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : sample_backbone_sigma: 0.125
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : sample_bfactors: True
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : sample_angle: True
+2026-04-30 15:38:20,928 [INFO    ] MainProcess qfit.command_line.qfit_protein : sample_angle_range: 7.5
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : sample_angle_step: 3.75
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : sample_rotamers: True
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : rotamer_neighborhood: 24
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : remove_conformers_below_cutoff: False
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : exclude_atoms: None
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : selection: None
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : cif_file: None
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : numConf: None
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : smiles: None
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : ligand_bic: None
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : ligand_rmsd: None
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : rot_range: None
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : trans_range: None
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : rotation_step: None
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : flip_180: False
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : fragment_length: 4
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : only_segment: False
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : nproc: 1
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : pdb: None
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : numpy float resolution: 1.0e-15
+2026-04-30 15:38:20,929 [INFO    ] MainProcess qfit.command_line.qfit_protein : ============================
+
+2026-04-30 15:38:21,917 [INFO    ] MainProcess qfit.xtal.volume : Expanding map with shape (120, 103, 109) to (256, 256, 256)
+2026-04-30 15:38:21,981 [INFO    ] MainProcess qfit.command_line.common_options : Scaling with resolution=1.700 radius=1.067
+2026-04-30 15:38:21,981 [INFO    ] MainProcess qfit.xtal.scaler : Using simple density transformer
+2026-04-30 15:38:21,982 [INFO    ] MainProcess qfit.xtal.scaler : Masking with radius 1.066667
+2026-04-30 15:38:22,013 [INFO    ] MainProcess qfit.xtal.scaler : Masked 45129 grid points out of 16777216
+2026-04-30 15:38:25,712 [INFO    ] MainProcess qfit.xtal.scaler : L2 scaling: S = 0.08	k = 0.11
+2026-04-30 15:38:45,441 [INFO    ] MainProcess qfit.command_line.qfit_protein : Residues to sample: 172
+2026-04-30 15:38:45,441 [INFO    ] MainProcess qfit.command_line.qfit_protein : nproc: 1
+2026-04-30 15:38:49,610 [INFO    ] MainProcess qfit.qfit : [A/PRO5] index 0 in Segment: length 172
+2026-04-30 15:38:51,427 [INFO    ] MainProcess qfit.qfit : [_sample_backbone] Not enough (<3) neighbor residues: lower True, upper False
+2026-04-30 15:38:51,429 [INFO    ] MainProcess qfit.qfit : Sampling rotamers for residue Residue: 5
+2026-04-30 15:38:51,432 [INFO    ] MainProcess qfit.qfit : Sampling chi: 1 (1)
+2026-04-30 15:38:51,451 [INFO    ] MainProcess qfit.qfit : Converting conformers to density
+2026-04-30 15:38:51,458 [INFO    ] MainProcess qfit.qfit : Solving QP for 228 target values with 3 models
+2026-04-30 15:38:51,478 [INFO    ] MainProcess qfit.qfit : Converting conformers to density
+2026-04-30 15:38:51,482 [INFO    ] MainProcess qfit.qfit : Solving QUBO for 198 target values with 1 models
+2026-04-30 15:38:51,482 [INFO    ] MainProcess qfit.qfit : Starting BIC loop over thresholds: [1.0, 0.5, 0.33, 0.25]
+2026-04-30 15:38:51,482 [INFO    ] MainProcess qfit.qfit : Threshold=1.000 — running QUBO solve
+2026-04-30 15:38:51,483 [INFO    ] MainProcess qfit.solvers : Constructed QUBO matrix of size (51, 51)
+2026-04-30 15:38:51,492 [CRITICAL] MainProcess qfit.command_line.qfit_protein : Traceback (most recent call last):
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/command_line/qfit_protein.py", line 412, in _run_qfit_residue_parallel
+    result = _run_qfit_residue(
+             ^^^^^^^^^^^^^^^^^^
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/command_line/qfit_protein.py", line 589, in _run_qfit_residue
+    qfit.run()
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/qfit.py", line 887, in run
+    self._sample_sidechain()
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/qfit.py", line 1288, in _sample_sidechain
+    self._solve_qubo(
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/qfit.py", line 394, in _solve_qubo
+    solver.solve_qubo(cardinality=None, threshold=threshold)
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/solvers.py", line 371, in solve_qubo
+    Q, const = self.compute_qubo_coeffs(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/solvers.py", line 276, in compute_qubo_coeffs
+    c_sum2 = -2 * lam3 * cardinality * np.concatenate([c, Delta*d])
+             ~~~~~~~~~~^~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for *: 'int' and 'NoneType'
+
+2026-04-30 15:38:55,419 [INFO    ] MainProcess qfit.qfit : [A/SER6] index 1 in Segment: length 172
+2026-04-30 15:38:58,017 [INFO    ] MainProcess qfit.qfit : [_sample_backbone] Not enough (<3) neighbor residues: lower True, upper False
+2026-04-30 15:38:58,019 [INFO    ] MainProcess qfit.qfit : Sampling rotamers for residue Residue: 6
+2026-04-30 15:38:58,020 [INFO    ] MainProcess qfit.qfit : Sampling chi: 1 (1)
+2026-04-30 15:38:58,055 [INFO    ] MainProcess qfit.qfit : Converting conformers to density
+2026-04-30 15:38:58,116 [INFO    ] MainProcess qfit.qfit : Solving QP for 297 target values with 31 models
+2026-04-30 15:38:58,134 [INFO    ] MainProcess qfit.qfit : Converting conformers to density
+2026-04-30 15:38:58,145 [INFO    ] MainProcess qfit.qfit : Solving QUBO for 231 target values with 4 models
+2026-04-30 15:38:58,145 [INFO    ] MainProcess qfit.qfit : Starting BIC loop over thresholds: [1.0, 0.5, 0.33, 0.25]
+2026-04-30 15:38:58,145 [INFO    ] MainProcess qfit.qfit : Threshold=1.000 — running QUBO solve
+2026-04-30 15:38:58,146 [INFO    ] MainProcess qfit.solvers : Constructed QUBO matrix of size (144, 144)
+2026-04-30 15:38:58,150 [CRITICAL] MainProcess qfit.command_line.qfit_protein : Traceback (most recent call last):
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/command_line/qfit_protein.py", line 412, in _run_qfit_residue_parallel
+    result = _run_qfit_residue(
+             ^^^^^^^^^^^^^^^^^^
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/command_line/qfit_protein.py", line 589, in _run_qfit_residue
+    qfit.run()
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/qfit.py", line 887, in run
+    self._sample_sidechain()
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/qfit.py", line 1288, in _sample_sidechain
+    self._solve_qubo(
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/qfit.py", line 394, in _solve_qubo
+    solver.solve_qubo(cardinality=None, threshold=threshold)
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/solvers.py", line 371, in solve_qubo
+    Q, const = self.compute_qubo_coeffs(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/solvers.py", line 276, in compute_qubo_coeffs
+    c_sum2 = -2 * lam3 * cardinality * np.concatenate([c, Delta*d])
+             ~~~~~~~~~~^~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for *: 'int' and 'NoneType'
+
+2026-04-30 15:39:02,158 [INFO    ] MainProcess qfit.qfit : [A/GLN7] index 2 in Segment: length 172
+2026-04-30 15:39:04,084 [INFO    ] MainProcess qfit.qfit : [_sample_backbone] Not enough (<3) neighbor residues: lower True, upper False
+2026-04-30 15:39:04,087 [INFO    ] MainProcess qfit.qfit : Sampling rotamers for residue Residue: 7
+2026-04-30 15:39:04,090 [INFO    ] MainProcess qfit.qfit : Sampling chi: 1 (3)
+2026-04-30 15:39:04,171 [INFO    ] MainProcess qfit.qfit : Converting conformers to density
+2026-04-30 15:39:04,288 [INFO    ] MainProcess qfit.qfit : Solving QP for 312 target values with 54 models
+2026-04-30 15:39:04,382 [INFO    ] MainProcess qfit.qfit : Converting conformers to density
+2026-04-30 15:39:04,411 [INFO    ] MainProcess qfit.qfit : Solving QUBO for 246 target values with 4 models
+2026-04-30 15:39:04,411 [INFO    ] MainProcess qfit.qfit : Starting BIC loop over thresholds: [1.0, 0.5, 0.33, 0.25]
+2026-04-30 15:39:04,411 [INFO    ] MainProcess qfit.qfit : Threshold=1.000 — running QUBO solve
+2026-04-30 15:39:04,412 [INFO    ] MainProcess qfit.solvers : Constructed QUBO matrix of size (144, 144)
+2026-04-30 15:39:04,415 [CRITICAL] MainProcess qfit.command_line.qfit_protein : Traceback (most recent call last):
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/command_line/qfit_protein.py", line 412, in _run_qfit_residue_parallel
+    result = _run_qfit_residue(
+             ^^^^^^^^^^^^^^^^^^
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/command_line/qfit_protein.py", line 589, in _run_qfit_residue
+    qfit.run()
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/qfit.py", line 887, in run
+    self._sample_sidechain()
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/qfit.py", line 1288, in _sample_sidechain
+    self._solve_qubo(
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/qfit.py", line 394, in _solve_qubo
+    solver.solve_qubo(cardinality=None, threshold=threshold)
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/solvers.py", line 371, in solve_qubo
+    Q, const = self.compute_qubo_coeffs(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/haeseong/miniconda3/envs/qfit-quantum/lib/python3.12/site-packages/qfit/solvers.py", line 276, in compute_qubo_coeffs
+    c_sum2 = -2 * lam3 * cardinality * np.concatenate([c, Delta*d])
+             ~~~~~~~~~~^~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for *: 'int' and 'NoneType'
+
+2026-04-30 15:39:08,398 [INFO    ] MainProcess qfit.qfit : [A/VAL8] index 3 in Segment: length 172
